@@ -266,9 +266,9 @@ function script.prerun(args)
                 pcg.addEntity(room, "player", TILE * 2, (hTiles - 2) * TILE)
             end
             if isEnd then
-                pcg.addEntity(room, "goldenBerry",
+                pcg.addEntity(room, "strawberry",
                     math.floor(slot.bounds.width / 2),
-                    math.floor(slot.bounds.height / 2 - TILE * 2))
+                    math.floor(slot.bounds.height / 2 - TILE * 2), { golden = true })
             end
 
             table.insert(createdRooms, room)

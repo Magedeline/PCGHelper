@@ -1121,24 +1121,27 @@ function pcg.styleAndEraForTile(id)
     return "custom", "new"
 end
 
+-- Valid vanilla Celeste decal paths (relative to Graphics/Atlases/Gameplay).
+-- These are specific texture files from the vanilla graphics dump, so Lönn and
+-- in-game rendering can resolve them without custom assets.
 function pcg.decalSetForStyle(style, era)
     local catalog = {
-        city       = { bg = { "particles/dust" },        fg = { "scenery/grass", "scenery/edge" } },
-        snow       = { bg = { "particles/snow" },        fg = { "scenery/snowgrass", "scenery/edge" } },
-        resort     = { bg = { "particles/star" },        fg = { "scenery/plant", "scenery/edge" } },
-        cave       = { bg = { "particles/dust" },        fg = { "scenery/edge", "scenery/rock" } },
-        temple     = { bg = { "particles/dust" },        fg = { "scenery/edge", "scenery/temple" } },
-        reflection = { bg = { "particles/dust" },        fg = { "scenery/edge", "scenery/reflection" } },
-        summit     = { bg = { "particles/snow" },       fg = { "scenery/snowgrass", "scenery/edge" } },
-        core       = { bg = { "particles/dust" },        fg = { "scenery/edge", "scenery/core" } },
+        city       = { bg = { "particles/circle", "particles/cloud" },          fg = { "decals/generic/grass_a", "decals/generic/grass_b", "decals/generic/hanginggrass_a" } },
+        snow       = { bg = { "particles/snow" },                               fg = { "decals/generic/snow_a", "decals/generic/snow_b", "decals/generic/snow_c" } },
+        resort     = { bg = { "particles/circle", "particles/cloud" },          fg = { "decals/generic/grass_a", "decals/generic/algae_a", "decals/generic/algae_b" } },
+        cave       = { bg = { "particles/blob", "particles/circle" },           fg = { "decals/generic/algae_a", "decals/generic/algae_b", "decals/generic/algae_c" } },
+        temple     = { bg = { "particles/circle", "particles/blob" },           fg = { "decals/generic/algae_a", "decals/generic/algae_b" } },
+        reflection = { bg = { "particles/circle", "particles/cloud" },          fg = { "decals/generic/grass_a", "decals/generic/algae_a" } },
+        summit     = { bg = { "particles/snow" },                               fg = { "decals/generic/snow_a", "decals/generic/snow_b", "decals/generic/grass_a" } },
+        core       = { bg = { "particles/circle", "particles/fire" },           fg = { "decals/generic/algae_a", "decals/generic/algae_b" } },
     }
     local sets = catalog[style] or catalog["city"]
     if era == "old" then
-        -- Old-style decal variants; override when the mod provides specific assets.
+        -- Old era: keep the same generic decals; they exist in every era.
         local oldOverrides = {
-            city       = { fg = { "scenery/oldedge" } },
-            snow       = { fg = { "scenery/oldedge" } },
-            resort     = { fg = { "scenery/oldedge" } },
+            city       = { fg = { "decals/generic/grass_a", "decals/generic/grass_b" } },
+            snow       = { fg = { "decals/generic/snow_a", "decals/generic/snow_b" } },
+            resort     = { fg = { "decals/generic/grass_a", "decals/generic/algae_a" } },
         }
         local old = oldOverrides[style]
         if old then
@@ -1146,6 +1149,48 @@ function pcg.decalSetForStyle(style, era)
         end
     end
     return sets
+end
+
+-- Ensure a decal texture path is a specific, renderable file. If it looks like a
+-- directory, pick a known variant; if it is still unrecognised, fall back to a
+-- safe vanilla particle that is guaranteed to render.
+function pcg.resolveDecalTexture(name)
+    if not name or name == "" then
+        return "particles/circle"
+    end
+    local known = {
+        ["particles/circle"] = true, ["particles/cloud"] = true, ["particles/blob"] = true,
+        ["particles/snow"] = true, ["particles/fire"] = true,
+        ["particles/stars/00"] = true, ["particles/starfield/00"] = true,
+        ["decals/generic/grass_a"] = true, ["decals/generic/grass_b"] = true,
+        ["decals/generic/grass_c"] = true, ["decals/generic/grass_d"] = true,
+        ["decals/generic/hanginggrass_a"] = true,
+        ["decals/generic/snow_a"] = true, ["decals/generic/snow_b"] = true,
+        ["decals/generic/snow_c"] = true, ["decals/generic/snow_d"] = true,
+        ["decals/generic/snow_e"] = true, ["decals/generic/snow_f"] = true,
+        ["decals/generic/snow_g"] = true, ["decals/generic/snow_h"] = true,
+        ["decals/generic/snow_i"] = true, ["decals/generic/snow_j"] = true,
+        ["decals/generic/snow_k"] = true, ["decals/generic/snow_l"] = true,
+        ["decals/generic/snow_m"] = true, ["decals/generic/snow_n"] = true,
+        ["decals/generic/snow_o"] = true,
+        ["decals/generic/algae_a"] = true, ["decals/generic/algae_b"] = true,
+        ["decals/generic/algae_c"] = true, ["decals/generic/algae_d"] = true,
+        ["decals/generic/algae_e"] = true,
+    }
+    if known[name] then
+        return name
+    end
+    local directoryVariants = {
+        ["decals/generic/grass"] = { "decals/generic/grass_a", "decals/generic/grass_b", "decals/generic/grass_c", "decals/generic/grass_d" },
+        ["decals/generic/snow"] = { "decals/generic/snow_a", "decals/generic/snow_b", "decals/generic/snow_c" },
+        ["decals/generic/algae"] = { "decals/generic/algae_a", "decals/generic/algae_b", "decals/generic/algae_c" },
+        ["particles/stars"] = { "particles/stars/00" },
+        ["particles/starfield"] = { "particles/starfield/00" },
+    }
+    if directoryVariants[name] then
+        return directoryVariants[name][1]
+    end
+    return "particles/circle"
 end
 
 function pcg.preserveBordersAndExits(tiles, w, h, originalTiles, borderTile)
@@ -1202,7 +1247,8 @@ function pcg.decorationPass(tiles, w, h, rng, hazardDensity, springDensity)
     for i = 1, lim do
         local s = exposedSurfaces[i]
         if s.x > 2 and s.x < w - 3 then
-            table.insert(decorations, { x = s.x, y = s.y - 1, type = "spikesUp" })
+            -- Place floor spikes at the standing tile, pointing up.
+            table.insert(decorations, { x = s.x, y = s.y, type = "spikesUp" })
         end
     end
 
@@ -1217,7 +1263,8 @@ function pcg.decorationPass(tiles, w, h, rng, hazardDensity, springDensity)
                 local hasWallNearby = (x > 2 and tiles[x - 1][y] ~= "0") or
                                       (x < w - 3 and tiles[x + 1][y] ~= "0")
                 if hasHeadroom and hasWallNearby and rng:nextDouble() < springDensity then
-                    table.insert(decorations, { x = x, y = y - 1, type = "spring" })
+                    -- Place the spring on the floor tile, launching upward.
+                    table.insert(decorations, { x = x, y = y, type = "spring" })
                 end
             end
         end
@@ -1527,8 +1574,23 @@ function pcg.clearTriggers(room)
     end
 end
 
+-- Entity defaults so Lönn and the game render them without missing fields.
+local entityDefaults = {
+    player = {},
+    strawberry = { winged = false, golden = false },
+    spikes = { type = "default" },
+    spring = { direction = "up" },
+    goldenBerry = { winged = false, golden = true },
+}
+
 function pcg.addEntity(room, name, x, y, attrs)
     local e = { _type = "entity", _name = name, x = x, y = y }
+    local defaults = entityDefaults[name]
+    if defaults then
+        for k, v in pairs(defaults) do
+            if e[k] == nil then e[k] = v end
+        end
+    end
     if attrs then for k, v in pairs(attrs) do e[k] = v end end
     if not room.entities then room.entities = {} end
     table.insert(room.entities, e)
@@ -1536,7 +1598,8 @@ function pcg.addEntity(room, name, x, y, attrs)
 end
 
 function pcg.addDecal(room, layer, name, x, y, attrs)
-    local d = { _type = "decal", _name = name, texture = name, x = x, y = y, scaleX = 1, scaleY = 1, rotation = 0, color = "ffffff" }
+    local tex = pcg.resolveDecalTexture(name)
+    local d = { _type = "decal", _name = tex, texture = tex, x = x, y = y, scaleX = 1, scaleY = 1, rotation = 0, color = "ffffff" }
     if attrs then for k, v in pairs(attrs) do d[k] = v end end
     local key = (layer == "bg") and "decalsBg" or "decalsFg"
     if not room[key] then room[key] = {} end
@@ -1544,8 +1607,19 @@ function pcg.addDecal(room, layer, name, x, y, attrs)
     return d
 end
 
+local triggerDefaults = {
+    CameraTargetTrigger = { lerpStrength = 0.5, positionMode = "NoEffect", xOnly = false, targetEntities = "", deleteFlag = "" },
+    SpawnPointTrigger = {},
+}
+
 function pcg.addTrigger(room, name, x, y, width, height, attrs)
     local t = { _type = "trigger", _name = name, x = x, y = y, width = width, height = height }
+    local defaults = triggerDefaults[name]
+    if defaults then
+        for k, v in pairs(defaults) do
+            if t[k] == nil then t[k] = v end
+        end
+    end
     if attrs then for k, v in pairs(attrs) do t[k] = v end end
     if not room.triggers then room.triggers = {} end
     table.insert(room.triggers, t)
@@ -1756,7 +1830,7 @@ function pcg.placeEntities(room, tiles, w, h, rng, isStart, isEnd, opts, analysi
     -- Golden berry: at the smart goal location, reachable.
     if isEnd and a.goal then
         local g = a.goal
-        pcg.addEntity(room, "goldenBerry", g.x * T, (g.y - 1) * T)
+        pcg.addEntity(room, "strawberry", g.x * T, (g.y - 1) * T, { golden = true })
         used[cellKey(g.x, g.y)] = true
     end
 
@@ -1853,7 +1927,8 @@ function pcg.placeEntities(room, tiles, w, h, rng, isStart, isEnd, opts, analysi
     end
 
     for _, s in ipairs(spikeSpots) do
-        pcg.addEntity(room, "spikes", s.x * T, s.y * T, { direction = "up", type = "default" })
+        -- Ceiling spikes hang from the tile above, so they point down.
+        pcg.addEntity(room, "spikes", s.x * T, s.y * T, { direction = "down", type = "default" })
     end
 
     -- Springs: vertical shafts with headroom and nearby wall.
@@ -1896,7 +1971,7 @@ function pcg.placeEntitiesLegacy(room, tiles, w, h, rng, isStart, isEnd)
         pcg.addEntity(room, "player", spawn.x * T, spawn.y * T)
     end
     if isEnd then
-        pcg.addEntity(room, "goldenBerry", math.floor(w * T / 2), math.floor(h * T / 2 - T * 2))
+        pcg.addEntity(room, "strawberry", math.floor(w * T / 2), math.floor(h * T / 2 - T * 2), { golden = true })
     end
 
     local berryCandidates = {}
@@ -1920,7 +1995,8 @@ function pcg.placeEntitiesLegacy(room, tiles, w, h, rng, isStart, isEnd)
     local spikeCount = math.floor(#surfaces / 4)
     for i = 1, math.min(spikeCount, #surfaces) do
         local k = surfaces[i]
-        pcg.addEntity(room, "spikes", k.x * T, k.y * T, { direction = "up", type = "default" })
+        -- Exposed top surfaces are ceilings; spikes hang down from them.
+        pcg.addEntity(room, "spikes", k.x * T, k.y * T, { direction = "down", type = "default" })
     end
 end
 
@@ -1939,7 +2015,7 @@ function pcg.placeDecals(room, tiles, w, h, rng, opts, analysis)
     local fgDecals = opts.fgDecalSet or defaultSets.fg
 
     -- Background decals: scattered in reachable air.
-    local bgCount = math.floor(#a.airCells * density / 8)
+    local bgCount = (#bgDecals > 0) and math.floor(#a.airCells * density / 8) or 0
     local placed = 0
     for i = 1, bgCount do
         if #a.airCells == 0 then break end
@@ -1948,13 +2024,15 @@ function pcg.placeDecals(room, tiles, w, h, rng, opts, analysis)
             local name = bgDecals[rng:next(#bgDecals) + 1]
             local scale = 0.4 + rng:nextDouble() * 0.6
             local rot = rng:nextDouble() * 0.2 - 0.1
-            pcg.addDecal(room, "bg", name, c.x * T + rng:next(T), c.y * T + rng:next(T), { scaleX = scale, scaleY = scale, rotation = rot })
+            local dx = math.max(0, math.min(room.width - 1, c.x * T + rng:next(T)))
+            local dy = math.max(0, math.min(room.height - 1, c.y * T + rng:next(T)))
+            pcg.addDecal(room, "bg", name, dx, dy, { scaleX = scale, scaleY = scale, rotation = rot })
             placed = placed + 1
         end
     end
 
     -- Foreground decals: attached to walls/ceilings.
-    local fgCount = math.floor(#a.walls * density / 2)
+    local fgCount = (#fgDecals > 0) and math.floor(#a.walls * density / 2) or 0
     for i = 1, fgCount do
         if #a.walls == 0 then break end
         local c = a.walls[rng:next(#a.walls) + 1]
@@ -1963,7 +2041,9 @@ function pcg.placeDecals(room, tiles, w, h, rng, opts, analysis)
             local ox = (c.side == "left") and -rng:nextDouble() * 4 or rng:nextDouble() * 4
             local oy = rng:nextDouble() * 4
             local scale = 0.8 + rng:nextDouble() * 0.4
-            pcg.addDecal(room, "fg", name, c.x * T + ox, c.y * T + oy, { scaleX = scale, scaleY = scale })
+            local dx = math.max(0, math.min(room.width - 1, c.x * T + ox))
+            local dy = math.max(0, math.min(room.height - 1, c.y * T + oy))
+            pcg.addDecal(room, "fg", name, dx, dy, { scaleX = scale, scaleY = scale })
             placed = placed + 1
         end
     end
@@ -2000,10 +2080,15 @@ function pcg.placeTriggers(room, tiles, w, h, rng, opts, analysis)
         for i = 1, camCount do
             local c = camPoints[i]
             if c then
+                local roomW = room.width or w * T
+                local roomH = room.height or h * T
                 local tw = math.min(w * T / 2, 160)
                 local th = math.min(h * T, 120)
                 local tx = math.max(0, c.x * T - tw / 2)
                 local ty = math.max(0, c.y * T - th / 2)
+                -- Clamp to room bounds so the trigger always renders inside the room.
+                if tx + tw > roomW then tx = math.max(0, roomW - tw) end
+                if ty + th > roomH then ty = math.max(0, roomH - th) end
                 pcg.addTrigger(room, "CameraTargetTrigger", tx, ty, tw, th, {
                     lerpStrength = 0.5, positionMode = "NoEffect", xOnly = false,
                     targetPosition = { x = c.x * T, y = c.y * T },

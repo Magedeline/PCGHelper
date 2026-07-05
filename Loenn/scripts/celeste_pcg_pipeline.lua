@@ -807,8 +807,8 @@ function script.prerun(args)
                 pcg.addEntity(room, "player", TILE * 2, (hTiles - 2) * TILE)
             end
             if b.isEnd then
-                pcg.addEntity(room, "goldenBerry", math.floor(room.width / 2),
-                    math.floor(room.height / 2 - TILE * 2))
+                pcg.addEntity(room, "strawberry", math.floor(room.width / 2),
+                    math.floor(room.height / 2 - TILE * 2), { golden = true })
             end
         end
     end
