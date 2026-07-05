@@ -1,0 +1,8 @@
+- Name: PCGHelper
+  Version: 1.0.0
+  Dependencies:
+    - Name: Everest
+      Version: 1.808.0
+  OptionalDependencies:
+    - Name: LoennScripts
+      Version: 1.0.8

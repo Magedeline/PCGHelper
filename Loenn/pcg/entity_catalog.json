@@ -1,0 +1,78 @@
+{
+  "mod_info": {
+    "name": "PCGHelper",
+    "version": "1.0.0",
+    "prefix": "",
+    "dependencies": [
+      "EverestCore"
+    ]
+  },
+  "vanilla_entities": [
+    { "name": "player", "category": "player", "width": 8, "height": 8, "description": "Default Celeste player spawn" },
+    { "name": "spawn", "category": "player", "width": 8, "height": 8, "description": "Player spawn point" },
+    { "name": "spring", "category": "gameplay", "width": 16, "height": 16, "description": "Bounce spring (default upright)" },
+    { "name": "booster", "category": "gameplay", "width": 16, "height": 16, "description": "Red/blue dash booster" },
+    { "name": "feather", "category": "gameplay", "width": 8, "height": 8, "description": "Flight feather" },
+    { "name": "refill", "category": "gameplay", "width": 8, "height": 8, "description": "Dash refill" },
+    { "name": "dashSwitch", "category": "gameplay", "width": 16, "height": 16, "description": "Dash-activated switch" },
+    { "name": "touchSwitch", "category": "gameplay", "width": 16, "height": 16, "description": "Touch-activated switch" },
+    { "name": "switchGate", "category": "gameplay", "width": 8, "height": 8, "description": "Switch-controlled gate" },
+    { "name": "crumbleBlock", "category": "solid", "width": 8, "height": 8, "description": "Crumbling platform" },
+    { "name": "fallingBlock", "category": "solid", "width": 8, "height": 8, "description": "Falling block" },
+    { "name": "jumpThru", "category": "solid", "width": 8, "height": 8, "description": "One-way jump-through platform" },
+    { "name": "spikes", "category": "hazard", "width": 8, "height": 8, "description": "Directional spikes (use 'direction' property: up/down/left/right)" },
+    { "name": "spinner", "category": "hazard", "width": 16, "height": 16, "description": "Crystal spinner" },
+    { "name": "trackSpinner", "category": "hazard", "width": 16, "height": 16, "description": "Moving track spinner" },
+    { "name": "rotateSpinner", "category": "hazard", "width": 16, "height": 16, "description": "Rotating spinner" },
+    { "name": "lightning", "category": "hazard", "width": 8, "height": 8, "description": "Lightning breaker" },
+    { "name": "fireBall", "category": "hazard", "width": 16, "height": 16, "description": "Fireball on track" },
+    { "name": "seeker", "category": "enemy", "width": 16, "height": 16, "description": "Seeker enemy" },
+    { "name": "strawberry", "category": "collectible", "width": 16, "height": 16, "description": "Strawberry" },
+    { "name": "goldenBerry", "category": "collectible", "width": 16, "height": 16, "description": "Golden strawberry" },
+    { "name": "cassette", "category": "collectible", "width": 16, "height": 16, "description": "Cassette tape" },
+    { "name": "heart", "category": "collectible", "width": 16, "height": 16, "description": "Crystal heart" },
+    { "name": "zipMover", "category": "gameplay", "width": 16, "height": 16, "description": "Zip mover platform" },
+    { "name": "moveBlock", "category": "gameplay", "width": 16, "height": 16, "description": "Move block" },
+    { "name": "swapBlock", "category": "gameplay", "width": 16, "height": 16, "description": "Swap block" },
+    { "name": "glider", "category": "gameplay", "width": 16, "height": 16, "description": "Glider/umbrella" },
+    { "name": "birdNpc", "category": "npc", "width": 8, "height": 8, "description": "Theo/Bird NPC" }
+  ],
+  "tile_palette": {
+    "air": "0",
+    "city": "1",
+    "old_city": "2",
+    "snow": "3",
+    "old_snow": "4",
+    "resort": "5",
+    "old_resort": "6",
+    "cave": "8",
+    "old_cave": "9",
+    "temple": "d",
+    "old_temple": "a",
+    "reflection": "g",
+    "old_reflection": "b",
+    "summit": "i",
+    "old_summit": "c",
+    "core": "k",
+    "old_core": "e"
+  },
+  "room_defaults": {
+    "width": 320,
+    "height": 184,
+    "music": "",
+    "ambience": "",
+    "color": 0,
+    "wind_pattern": "None",
+    "dark": false,
+    "space": false
+  },
+  "generation_constraints": {
+    "min_room_width": 160,
+    "max_room_width": 640,
+    "min_room_height": 120,
+    "max_room_height": 360,
+    "max_entities_per_room": 50,
+    "max_triggers_per_room": 20,
+    "max_decals_per_room": 100
+  }
+}
