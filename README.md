@@ -10,6 +10,10 @@ A procedural content generation toolkit for Celeste map editors (Lönn). PCGHelp
   - Random-walk cave
   - Directional tunnel
   - Cellular automata cave
+- **Simplex Noise Generators** — Ken Perlin's simplex algorithm (ported from [weswigham/simplex](https://github.com/weswigham/simplex)), fewer directional artifacts and cheaper per sample than the classic Perlin noise above:
+  - Simplex top-surface / platform generation
+  - Simplex cave
+  - Simplex FBM cave (layered octaves for richer, less uniform texture)
 - **Style & Tileset Era Support** — generate rooms using `new` (post-Farewell) or `old` (classic) tile IDs, auto-detect from training rooms, or mix.
 - **MdMC / WFC / Hybrid Modes** — train a Multi-dimensional Markov Chain on existing rooms, generate with Wave Function Collapse, or combine both.
 - **Smart Placement** — entities, decals, and triggers placed based on room geometry and style.

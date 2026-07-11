@@ -70,6 +70,8 @@ local script = {
         unityDeathLimit = 3,
         unityPasses = 4,
         unityInitialDensity = 0.45,
+        unityFbmOctaves = 4,
+        unityFbmPersistence = 0.5,
 
         -- Smart placement
         placementMode = "smart",
@@ -89,7 +91,7 @@ local script = {
             table.sort(opts)
             return opts
         end)(), editable = true },
-        generationMode = { fieldType = "loennScripts.dropdown", options = { "mdmc", "wfc", "hybrid", "perlin_top", "perlin_cave", "randomwalk_cave", "directional_tunnel", "cellular" }, editable = false },
+        generationMode = { fieldType = "loennScripts.dropdown", options = { "mdmc", "wfc", "hybrid", "perlin_top", "perlin_cave", "simplex_top", "simplex_cave", "simplex_fbm_cave", "randomwalk_cave", "directional_tunnel", "cellular" }, editable = false },
         tilesetEra = { fieldType = "loennScripts.dropdown", options = { "new", "old", "mixed", "trained" }, editable = false },
         placementMode = { fieldType = "loennScripts.dropdown", options = { "smart", "legacy" }, editable = false },
         triggerMode = { fieldType = "loennScripts.dropdown", options = { "camera", "spawn", "all", "none" }, editable = false },
@@ -105,6 +107,8 @@ local script = {
         unityDeathLimit = { fieldType = "integer" },
         unityPasses = { fieldType = "integer" },
         unityInitialDensity = { fieldType = "number" },
+        unityFbmOctaves = { fieldType = "integer" },
+        unityFbmPersistence = { fieldType = "number" },
     },
     tooltips = {
         roomCount = "Number of rooms to generate in the skeleton.",
@@ -115,7 +119,7 @@ local script = {
         resetSkeleton = "Rebuild the skeleton if no acceptable tile layout is produced (paper §CLI -r).",
         trainSource = "Which rooms to train the MdMC on.",
         configuration = "3x3 configuration matrix (row-major).",
-        generationMode = "MdMC, WFC, Hybrid, or Unity procedural seeds (Perlin / Random Walk / Cellular / Tunnel).",
+        generationMode = "MdMC, WFC, Hybrid, or procedural seeds (Perlin / Simplex / Random Walk / Cellular / Tunnel). Simplex modes have fewer directional artifacts than Perlin and are cheaper per sample.",
         tilesetEra = "Which tileset era to use: new, old, a 50/50 mix, or whatever the training rooms already contain.",
         maxBacktrackDepth = "Maximum tiles to backtrack when an unseen n-gram is encountered.",
         triesLimit = "Full-room generation retries per room before accepting the best candidate.",
@@ -148,6 +152,8 @@ local script = {
         unityDeathLimit = "Cellular automata: neighbour count below which solid becomes air.",
         unityPasses = "Cellular automata: number of smoothing passes.",
         unityInitialDensity = "Cellular automata: initial chance of a solid cell (0-1).",
+        unityFbmOctaves = "Simplex FBM cave: number of layered noise octaves. More = richer/rougher texture.",
+        unityFbmPersistence = "Simplex FBM cave: amplitude falloff per octave (0-1). Lower = smoother, higher = noisier.",
         placementMode = "Smart: precision placement of entities/decals/triggers using spatial analysis. Legacy: old random shuffle.",
         placeDecals = "Place background and foreground decals based on room geometry.",
         placeTriggers = "Place camera / spawn triggers based on room geometry.",
@@ -563,6 +569,8 @@ function script.prerun(args)
     local unityDeathLimit     = math.max(0, tonumber(args.unityDeathLimit) or 3)
     local unityPasses         = math.max(0, tonumber(args.unityPasses) or 4)
     local unityInitialDensity = math.max(0, math.min(1, tonumber(args.unityInitialDensity) or 0.45))
+    local unityFbmOctaves     = math.max(1, tonumber(args.unityFbmOctaves) or 4)
+    local unityFbmPersistence = math.max(0, math.min(1, tonumber(args.unityFbmPersistence) or 0.5))
 
     local placementMode = args.placementMode or "smart"
     local useSmartPlacement = placementMode ~= "legacy"
@@ -645,6 +653,8 @@ function script.prerun(args)
 
         local filled = false
         local isUnityMode = (generationMode == "perlin_top" or generationMode == "perlin_cave" or
+                             generationMode == "simplex_top" or generationMode == "simplex_cave" or
+                             generationMode == "simplex_fbm_cave" or
                              generationMode == "randomwalk_cave" or generationMode == "directional_tunnel" or
                              generationMode == "cellular")
         if pcg.tableCount(probs) > 0 or isUnityMode then
@@ -660,6 +670,12 @@ function script.prerun(args)
                     candidate = unity.perlinTopLayer(wTiles, hTiles, rng, dominant)
                 elseif generationMode == "perlin_cave" then
                     candidate = unity.perlinCave(wTiles, hTiles, rng, dominant, unityModifier)
+                elseif generationMode == "simplex_top" then
+                    candidate = unity.simplexTopLayer(wTiles, hTiles, rng, dominant)
+                elseif generationMode == "simplex_cave" then
+                    candidate = unity.simplexCave(wTiles, hTiles, rng, dominant, unityModifier)
+                elseif generationMode == "simplex_fbm_cave" then
+                    candidate = unity.simplexFbmCave(wTiles, hTiles, rng, dominant, unityModifier, unityFbmOctaves, unityFbmPersistence)
                 elseif generationMode == "randomwalk_cave" then
                     candidate = unity.randomWalkCave(wTiles, hTiles, rng, dominant, unityFloorPercent)
                 elseif generationMode == "directional_tunnel" then
@@ -695,6 +711,12 @@ function script.prerun(args)
                     bestTiles = unity.perlinTopLayer(wTiles, hTiles, rng, dominant)
                 elseif generationMode == "perlin_cave" then
                     bestTiles = unity.perlinCave(wTiles, hTiles, rng, dominant, unityModifier)
+                elseif generationMode == "simplex_top" then
+                    bestTiles = unity.simplexTopLayer(wTiles, hTiles, rng, dominant)
+                elseif generationMode == "simplex_cave" then
+                    bestTiles = unity.simplexCave(wTiles, hTiles, rng, dominant, unityModifier)
+                elseif generationMode == "simplex_fbm_cave" then
+                    bestTiles = unity.simplexFbmCave(wTiles, hTiles, rng, dominant, unityModifier, unityFbmOctaves, unityFbmPersistence)
                 elseif generationMode == "randomwalk_cave" then
                     bestTiles = unity.randomWalkCave(wTiles, hTiles, rng, dominant, unityFloorPercent)
                 elseif generationMode == "directional_tunnel" then
