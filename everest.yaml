@@ -1,5 +1,5 @@
 - Name: PCGHelper
-  Version: 1.3.0
+  Version: 1.3.5
   Dependencies:
     - Name: Everest
       Version: 1.808.0
