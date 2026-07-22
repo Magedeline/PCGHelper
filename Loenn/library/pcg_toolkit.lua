@@ -869,6 +869,10 @@ function pcg.generateMdmc(probs, offsets, w, h, maxBacktrackDepth, rng, defaultT
     local backtrackCount = 0
     local maxSteps = math.max(#order * 8, 4096)
     local steps = 0
+    -- Number of cells that had to be filled with a random tile because the
+    -- model had no answer ("degeneration", paper §3.3.2). Returned so callers
+    -- can reject rooms that are mostly noise.
+    local degenCount = 0
 
     while pos <= #order do
         steps = steps + 1
@@ -881,6 +885,7 @@ function pcg.generateMdmc(probs, offsets, w, h, maxBacktrackDepth, rng, defaultT
                     tiles[fxy.x][fxy.y] = pcg.sample(fdist, rng)
                 else
                     tiles[fxy.x][fxy.y] = allTiles[rng:next(#allTiles) + 1]
+                    degenCount = degenCount + 1
                 end
             end
             log("Backtracking exceeded step budget - finished room with a greedy pass")
@@ -949,6 +954,7 @@ function pcg.generateMdmc(probs, offsets, w, h, maxBacktrackDepth, rng, defaultT
             tiles[x][y] = "0"
             if pos == 1 or backtrackCount >= maxBacktrackDepth then
                 tiles[x][y] = allTiles[rng:next(#allTiles) + 1]
+                degenCount = degenCount + 1
                 pos = pos + 1
                 backtrackCount = 0
             else
@@ -958,7 +964,7 @@ function pcg.generateMdmc(probs, offsets, w, h, maxBacktrackDepth, rng, defaultT
         end
     end
 
-    return tiles
+    return tiles, degenCount
 end
 
 function pcg.applyBorder(tiles, w, h, borderTile)
@@ -1307,7 +1313,82 @@ function pcg.generateBackgroundEnhanced(fgTiles, w, h, material, style)
     return bg
 end
 
-function pcg.isPlayable(tiles, w, h)
+-- Border exits: contiguous air runs (>= minRun tiles) along each border side.
+-- Returns a list of { side = "left"|"right"|"top"|"bottom", cells = { {x,y}, ... } }.
+function pcg.findExits(tiles, w, h, minRun)
+    minRun = minRun or 2
+    local exits = {}
+    local function scanLine(len, getCell, makeCell, side)
+        local runStart = nil
+        for k = 0, len do
+            local isAir = k < len and getCell(k) == "0"
+            if isAir then
+                if not runStart then runStart = k end
+            elseif runStart then
+                if k - runStart >= minRun then
+                    local cells = {}
+                    for i = runStart, k - 1 do table.insert(cells, makeCell(i)) end
+                    table.insert(exits, { side = side, cells = cells })
+                end
+                runStart = nil
+            end
+        end
+    end
+    scanLine(h, function(y) return tiles[0][y] end, function(y) return { x = 0, y = y } end, "left")
+    scanLine(h, function(y) return tiles[w - 1][y] end, function(y) return { x = w - 1, y = y } end, "right")
+    scanLine(w, function(x) return tiles[x][0] end, function(x) return { x = x, y = 0 } end, "top")
+    scanLine(w, function(x) return tiles[x][h - 1] end, function(x) return { x = x, y = h - 1 } end, "bottom")
+    return exits
+end
+
+-- Multi-source BFS through air from one exit's cells to another exit's cells.
+-- Returns (distance, pathCells) or nil when disconnected.
+local function bfsExitToExit(tiles, w, h, fromCells, toCells)
+    local target = {}
+    for _, c in ipairs(toCells) do target[c.y * w + c.x] = true end
+
+    local visited, parent = {}, {}
+    local q, qHead = {}, 1
+    for _, c in ipairs(fromCells) do
+        local k = c.y * w + c.x
+        if tiles[c.x] and tiles[c.x][c.y] == "0" and not visited[k] then
+            visited[k] = true
+            table.insert(q, { x = c.x, y = c.y, dist = 0 })
+        end
+    end
+
+    local dxs = { -1, 1, 0, 0 }
+    local dys = { 0, 0, -1, 1 }
+    while qHead <= #q do
+        local cur = q[qHead]; qHead = qHead + 1
+        local ck = cur.y * w + cur.x
+        if target[ck] then
+            local path = {}
+            local k = ck
+            while k do
+                table.insert(path, { x = k % w, y = math.floor(k / w) })
+                k = parent[k]
+            end
+            return cur.dist, path
+        end
+        for d = 1, 4 do
+            local nx, ny = cur.x + dxs[d], cur.y + dys[d]
+            if nx >= 0 and ny >= 0 and nx < w and ny < h and tiles[nx][ny] == "0" then
+                local nk = ny * w + nx
+                if not visited[nk] then
+                    visited[nk] = true
+                    parent[nk] = ck
+                    table.insert(q, { x = nx, y = ny, dist = cur.dist + 1 })
+                end
+            end
+        end
+    end
+    return nil
+end
+
+-- Old structural heuristic, kept as the fallback gate for rooms without two
+-- border exits (e.g. refilling a closed practice room in markov_level_gen).
+local function interiorLooksPlayable(tiles, w, h)
     local floorY = {}
     for x = 1, w - 2 do
         for y = h - 2, 1, -1 do
@@ -1330,6 +1411,29 @@ function pcg.isPlayable(tiles, w, h)
         end
     end
     return air >= math.floor((w - 2) * (h - 2) * 15 / 100)
+end
+
+-- Playability gate (paper §4.1): when the room has two or more border exits,
+-- every exit must be BFS-reachable from the first one — this is the actual
+-- clearability criterion and it works for vertical rooms too. Connected rooms
+-- only need an air-ratio sanity check (a flat room is boring but clearable);
+-- rooms with fewer than two exits fall back to the structural heuristic.
+function pcg.isPlayable(tiles, w, h)
+    local exits = pcg.findExits(tiles, w, h)
+    if #exits >= 2 then
+        for i = 2, #exits do
+            local dist = bfsExitToExit(tiles, w, h, exits[1].cells, exits[i].cells)
+            if not dist then return false end
+        end
+        local air = 0
+        for x = 1, w - 2 do
+            for y = 1, h - 2 do
+                if tiles[x][y] == "0" then air = air + 1 end
+            end
+        end
+        return air >= math.floor((w - 2) * (h - 2) * 15 / 100)
+    end
+    return interiorLooksPlayable(tiles, w, h)
 end
 
 function pcg.bfsPathLength(tiles, w, h, rng)
@@ -1367,78 +1471,154 @@ function pcg.bfsPathLength(tiles, w, h, rng)
     return -1
 end
 
--- Computes full RoomMetrics (paper §4.1/4.2/4.3).
-function pcg.computeMetrics(tiles, w, h, numPaths, rng, w1, w2, w3, z1, z2, z3, dominantSolid)
-    local m = { pathLengths = {}, pathMean = 0, pathVariance = 0,
-                globalNleDensity = 0, localNleDensity = 0, shannonDiversity = 0,
-                interestingness = 0, holeFrequency = 0, localLeDensity = 0,
-                scarcity = 0, difficulty = 0 }
+-- Scarcity used to use a 999 sentinel when the local NLE density was zero,
+-- which made the difficulty score explode on any sparse room (the instability
+-- the paper itself flags in §4.3.1). A clamp keeps D comparable across rooms.
+local SCARCITY_CAP = 20
+
+-- How far the AOI extends around each path cell (paper §4.1 uses AOI_n; n=2).
+local AOI_RADIUS = 2
+
+-- Shared scoring core (paper §4.1-§4.3, with the port fixes):
+--  * paths run exit-to-exit through the real border openings, so vertical and
+--    multi-exit rooms score correctly; rooms with <2 exits fall back to the
+--    old horizontal sweep
+--  * the AOI is the union of found paths dilated by AOI_RADIUS — the area the
+--    player actually visits — instead of a fixed centre box
+--  * Shannon entropy is normalised to [0,1] by log(#tile types), so the
+--    diversity term can no longer reward pure noise
+local function scoreCore(tiles, w, h, dominant, numPaths, rng)
+    local exits = pcg.findExits(tiles, w, h)
+    local pathLens = {}
+    local pathCells = {}
+    local sampledPairs, connectedPairs = 0, 0
+
+    if #exits >= 2 then
+        local exitPairs = {}
+        for i = 1, #exits do
+            for j = i + 1, #exits do table.insert(exitPairs, { i, j }) end
+        end
+        for i = #exitPairs, 2, -1 do
+            local j = rng:next(i) + 1
+            exitPairs[i], exitPairs[j] = exitPairs[j], exitPairs[i]
+        end
+        sampledPairs = math.min(#exitPairs, math.max(1, numPaths))
+        for k = 1, sampledPairs do
+            local pr = exitPairs[k]
+            local dist, path = bfsExitToExit(tiles, w, h, exits[pr[1]].cells, exits[pr[2]].cells)
+            if dist then
+                connectedPairs = connectedPairs + 1
+                table.insert(pathLens, dist)
+                for _, c in ipairs(path) do pathCells[c.y * w + c.x] = true end
+            end
+        end
+    else
+        for p = 1, numPaths do
+            local len = pcg.bfsPathLength(tiles, w, h, rng)
+            if len >= 0 then table.insert(pathLens, len) end
+        end
+    end
+
+    -- AOI mask: dilated paths when available, centre-third box as fallback.
+    local aoi = {}
+    local aoiArea = 0
+    if next(pathCells) ~= nil then
+        for k in pairs(pathCells) do
+            local cx, cy = k % w, math.floor(k / w)
+            for dx = -AOI_RADIUS, AOI_RADIUS do
+                for dy = -AOI_RADIUS, AOI_RADIUS do
+                    local nx, ny = cx + dx, cy + dy
+                    if nx >= 1 and ny >= 1 and nx < w - 1 and ny < h - 1 then
+                        local nk = ny * w + nx
+                        if not aoi[nk] then aoi[nk] = true aoiArea = aoiArea + 1 end
+                    end
+                end
+            end
+        end
+    else
+        local ax0, ax1 = math.floor(w / 3), math.floor(w * 2 / 3)
+        local ay0, ay1 = math.floor(h / 3), math.floor(h * 2 / 3)
+        for x = ax0, ax1 - 1 do
+            for y = ay0, ay1 - 1 do
+                aoi[y * w + x] = true
+                aoiArea = aoiArea + 1
+            end
+        end
+    end
+    aoiArea = math.max(1, aoiArea)
 
     local area = (w - 2) * (h - 2)
-    local ax0 = math.floor(w / 3)
-    local ay0 = math.floor(h / 3)
-    local ax1 = math.floor(w * 2 / 3)
-    local ay1 = math.floor(h * 2 / 3)
-    local aoiArea = math.max(1, (ax1 - ax0) * (ay1 - ay0))
-
     local nleTotal, nleInAoi, leInAoi, holeCols = 0, 0, 0, 0
     local tileFreq = {}
 
     for x = 1, w - 2 do
-        if x >= 1 and x < w - 1 and tiles[x][h - 2] == "0" then holeCols = holeCols + 1 end
+        if tiles[x][h - 2] == "0" then holeCols = holeCols + 1 end
         for y = 1, h - 2 do
             local t = tiles[x][y]
             if t ~= "0" then
                 tileFreq[t] = (tileFreq[t] or 0) + 1
-                local isNle = (t ~= dominantSolid)
-                local isLe = (t == dominantSolid) and (y >= 1 and tiles[x][y - 1] == "0")
+                local inAoi = aoi[y * w + x]
+                local isNle = (t ~= dominant)
+                local isLe = (t == dominant) and (tiles[x][y - 1] == "0")
                 if isNle then
                     nleTotal = nleTotal + 1
-                    if x >= ax0 and x < ax1 and y >= ay0 and y < ay1 then nleInAoi = nleInAoi + 1 end
+                    if inAoi then nleInAoi = nleInAoi + 1 end
                 end
-                if isLe and x >= ax0 and x < ax1 and y >= ay0 and y < ay1 then
-                    leInAoi = leInAoi + 1
-                end
+                if isLe and inAoi then leInAoi = leInAoi + 1 end
             end
         end
     end
 
-    for p = 1, numPaths do
-        local len = pcg.bfsPathLength(tiles, w, h, rng)
-        if len >= 0 then table.insert(m.pathLengths, len) end
-    end
-
-    local pathCount = #m.pathLengths
-    if pathCount > 0 then
+    local pathMean, pathVar = 0, 0
+    if #pathLens > 0 then
         local sum = 0
-        for _, l in ipairs(m.pathLengths) do sum = sum + l end
-        m.pathMean = sum / pathCount
-        local vs = 0
-        for _, l in ipairs(m.pathLengths) do vs = vs + (l - m.pathMean) * (l - m.pathMean) end
-        m.pathVariance = pathCount > 1 and vs / pathCount or 0
-    end
-
-    local pathLen = m.pathMean > 0 and m.pathMean or 1
-    m.holeFrequency = holeCols / pathLen
-
-    m.globalNleDensity = nleTotal / area
-    m.localNleDensity = nleInAoi / aoiArea
-
-    local totalTiles = 0
-    for _, c in pairs(tileFreq) do totalTiles = totalTiles + c end
-    if totalTiles > 0 then
-        for _, cnt in pairs(tileFreq) do
-            local pi = cnt / totalTiles
-            if pi > 0 then m.shannonDiversity = m.shannonDiversity - pi * math.log(pi) end
+        for _, l in ipairs(pathLens) do sum = sum + l end
+        pathMean = sum / #pathLens
+        if #pathLens > 1 then
+            local vs = 0
+            for _, l in ipairs(pathLens) do vs = vs + (l - pathMean) * (l - pathMean) end
+            pathVar = vs / #pathLens
         end
     end
 
+    local totalTiles, tileTypes = 0, 0
+    for _, c in pairs(tileFreq) do totalTiles = totalTiles + c tileTypes = tileTypes + 1 end
+    local entropy = 0
+    if totalTiles > 0 and tileTypes > 1 then
+        for _, cnt in pairs(tileFreq) do
+            local pi = cnt / totalTiles
+            if pi > 0 then entropy = entropy - pi * math.log(pi) end
+        end
+        entropy = entropy / math.log(tileTypes)
+    end
+
+    local dGlobal = nleTotal / area
+    local dLocal = nleInAoi / aoiArea
+    local scarcity = dLocal > 0 and math.min(1 / dLocal, SCARCITY_CAP) or SCARCITY_CAP
+
+    return {
+        exits = exits,
+        sampledPairs = sampledPairs,
+        connectedPairs = connectedPairs,
+        pathLengths = pathLens,
+        pathMean = pathMean,
+        pathVariance = pathVar,
+        globalNleDensity = dGlobal,
+        localNleDensity = dLocal,
+        shannonDiversity = entropy,
+        -- Hf = holes / path length (§4.3); without a sampled path, normalise
+        -- by interior width so the term stays a bounded ratio.
+        holeFrequency = holeCols / (pathMean > 0 and pathMean or math.max(w - 2, 1)),
+        localLeDensity = leInAoi / aoiArea,
+        scarcity = scarcity,
+    }
+end
+
+-- Computes full RoomMetrics (paper §4.1/4.2/4.3).
+function pcg.computeMetrics(tiles, w, h, numPaths, rng, w1, w2, w3, z1, z2, z3, dominantSolid)
+    local m = scoreCore(tiles, w, h, dominantSolid, numPaths, rng)
     m.interestingness = w1 * m.globalNleDensity + w2 * m.localNleDensity + w3 * m.shannonDiversity
-
-    m.localLeDensity = leInAoi / aoiArea
-    m.scarcity = m.localNleDensity > 0 and 1 / m.localNleDensity or 999
     m.difficulty = z1 * m.holeFrequency + z2 * m.localLeDensity + z3 * m.scarcity
-
     return m
 end
 
@@ -1452,87 +1632,14 @@ function pcg.passesVarianceCheck(pathLengths, pathVariance)
     return pathVariance <= 2 * median
 end
 
--- Compact score (I, D, pathMean, pathVar) used by the pipeline.
+-- Compact score (I, D, pathMean, pathVar, pathLens) used by the pipeline.
+-- Thin wrapper over the shared scoring core so the pipeline and the
+-- per-room generator can never drift apart again.
 function pcg.score(tiles, w, h, dominant, numPaths, rng, w1, w2, w3, z1, z2, z3)
-    local area = (w - 2) * (h - 2)
-    local ax0 = math.floor(w / 3) local ax1 = math.floor(w * 2 / 3)
-    local ay0 = math.floor(h / 3) local ay1 = math.floor(h * 2 / 3)
-    local aoiArea = math.max(1, (ax1 - ax0) * (ay1 - ay0))
-
-    local nleTotal, nleAoi, leAoi, holes = 0, 0, 0, 0
-    local freq = {}
-    for x = 1, w - 2 do
-        if tiles[x][h - 2] == "0" then holes = holes + 1 end
-        for y = 1, h - 2 do
-            local t = tiles[x][y]
-            if t ~= "0" then
-                freq[t] = (freq[t] or 0) + 1
-                local isNle = t ~= dominant
-                local isLe = t == dominant and tiles[x][y - 1] == "0"
-                if isNle then nleTotal = nleTotal + 1 if x >= ax0 and x < ax1 and y >= ay0 and y < ay1 then nleAoi = nleAoi + 1 end end
-                if isLe and x >= ax0 and x < ax1 and y >= ay0 and y < ay1 then leAoi = leAoi + 1 end
-            end
-        end
-    end
-
-    local totT = 0
-    for _, c in pairs(freq) do totT = totT + c end
-    local entropy = 0
-    if totT > 0 then
-        for _, c in pairs(freq) do local p = c / totT if p > 0 then entropy = entropy - p * math.log(p) end end
-    end
-
-    local dGlobal = nleTotal / area
-    local dLocal = nleAoi / aoiArea
-    local I = w1 * dGlobal + w2 * dLocal + w3 * entropy
-
-    local pathLens = {}
-    local ddx = { -1, 1, 0, 0 } local ddy = { 0, 0, -1, 1 }
-    for p = 1, numPaths do
-        local sy = rng:nextRange(math.floor(h / 2), h - 3)
-        local sx = -1
-        for x = 1, w - 2 do if tiles[x][sy] == "0" then sx = x break end end
-        if sx >= 0 then
-            local visited = {}
-            for xx = 0, w - 1 do visited[xx] = {} end
-            local q = {}
-            local qHead = 1
-            table.insert(q, { x = sx, y = sy, dist = 0 })
-            visited[sx][sy] = true
-            local found = false
-            while qHead <= #q and not found do
-                local cur = q[qHead]; qHead = qHead + 1
-                if cur.x == w - 2 then table.insert(pathLens, cur.dist) found = true break end
-                for d = 1, 4 do
-                    local nx = cur.x + ddx[d] local ny = cur.y + ddy[d]
-                    if nx >= 1 and ny >= 1 and nx < w - 1 and ny < h - 1 then
-                        if tiles[nx][ny] == "0" and not visited[nx][ny] then
-                            visited[nx][ny] = true
-                            table.insert(q, { x = nx, y = ny, dist = cur.dist + 1 })
-                        end
-                    end
-                end
-            end
-        end
-    end
-
-    local pathMean = 0
-    if #pathLens > 0 then
-        local s = 0 for _, l in ipairs(pathLens) do s = s + l end pathMean = s / #pathLens
-    end
-    local pathVar = 0
-    if #pathLens > 1 then
-        local s = 0 for _, l in ipairs(pathLens) do s = s + (l - pathMean) * (l - pathMean) end
-        pathVar = s / #pathLens
-    end
-
-    local L = pathMean > 0 and pathMean or 1
-    local Hf = holes / L
-    local leLocal = leAoi / aoiArea
-    local scarcity = dLocal > 0 and 1 / dLocal or 999
-    local D = z1 * Hf + z2 * leLocal + z3 * scarcity
-
-    return I, D, pathMean, pathVar, pathLens
+    local m = scoreCore(tiles, w, h, dominant, numPaths, rng)
+    local I = w1 * m.globalNleDensity + w2 * m.localNleDensity + w3 * m.shannonDiversity
+    local D = z1 * m.holeFrequency + z2 * m.localLeDensity + z3 * m.scarcity
+    return I, D, m.pathMean, m.pathVariance, m.pathLengths
 end
 
 -- =========================================================================
@@ -1808,7 +1915,10 @@ function pcg.distanceTransform(tiles, w, h, sources, passable)
 end
 
 -- Place player, golden berry, strawberries, spikes and springs with spatial awareness.
--- opts supports: analysis, berryCount, berrySpacing, spikeCount, hazardDensity, springDensity.
+-- Strawberry/spike/spring counts are density budgets (clamp(area * density, min, max))
+-- rather than raw candidate-tile fractions, so counts stay sane on large/open rooms.
+-- opts supports: analysis, berryCount, berryDensity, berryMin, berryMax, berrySpacing,
+-- spikeCount, spikeMax, hazardDensity, springDensity, springMax.
 function pcg.placeEntities(room, tiles, w, h, rng, isStart, isEnd, opts, analysis)
     opts = opts or {}
     local T = TILE
@@ -1821,8 +1931,10 @@ function pcg.placeEntities(room, tiles, w, h, rng, isStart, isEnd, opts, analysi
 
     pcg.clearEntities(room)
 
-    -- Player spawn
-    if isStart and spawn then
+    -- Player spawn. Every room gets one: dying in a room with no spawn point
+    -- errors out in-game, so a spawn per room is a hard requirement, not a
+    -- start-room nicety.
+    if spawn then
         pcg.addEntity(room, "player", spawn.x * T, spawn.y * T)
         used[cellKey(spawn.x, spawn.y)] = true
     end
@@ -1830,12 +1942,19 @@ function pcg.placeEntities(room, tiles, w, h, rng, isStart, isEnd, opts, analysi
     -- Golden berry: at the smart goal location, reachable.
     if isEnd and a.goal then
         local g = a.goal
-        pcg.addEntity(room, "strawberry", g.x * T, (g.y - 1) * T, { golden = true })
+        pcg.addEntity(room, "goldenBerry", g.x * T, (g.y - 1) * T)
         used[cellKey(g.x, g.y)] = true
     end
 
-    -- Strawberries: reachable floors, spaced, roughly ordered along the path.
-    local berryCount = opts.berryCount or math.max(1, math.floor(#floors / 6))
+    -- Strawberries: density budget (clamp(room_area * density, min, max)),
+    -- reachable floors, spaced, roughly ordered along the path. The old
+    -- "#floors / 6" formula had no upper bound, so open rooms with lots of
+    -- walkable floor tiles could nominate dozens of berries; clamping keeps
+    -- the count sane regardless of room shape.
+    local berryDensity = opts.berryDensity or 0.002
+    local berryMin = opts.berryMin or 1
+    local berryMax = opts.berryMax or 3
+    local berryCount = opts.berryCount or math.max(berryMin, math.min(berryMax, math.floor(w * h * berryDensity + 0.5)))
     local berrySpots = {}
     local candidates = {}
     for _, f in ipairs(floors) do
@@ -1852,22 +1971,31 @@ function pcg.placeEntities(room, tiles, w, h, rng, isStart, isEnd, opts, analysi
     table.sort(candidates, function(a, b) return a.score > b.score end)
 
     local minBerryDist = opts.berrySpacing or math.max(4, math.floor(w / 14))
-    for _, c in ipairs(candidates) do
-        if #berrySpots >= berryCount then break end
-        local k = cellKey(c.x, c.y)
-        if not used[k] then
-            local tooClose = false
-            for _, b in ipairs(berrySpots) do
-                if math.abs(b.x - c.x) + math.abs(b.y - c.y) < minBerryDist then
-                    tooClose = true
-                    break
+
+    local function fillBerrySpots(spacing)
+        for _, c in ipairs(candidates) do
+            if #berrySpots >= berryCount then break end
+            local k = cellKey(c.x, c.y)
+            if not used[k] then
+                local tooClose = false
+                for _, b in ipairs(berrySpots) do
+                    if math.abs(b.x - c.x) + math.abs(b.y - c.y) < spacing then
+                        tooClose = true
+                        break
+                    end
+                end
+                if not tooClose then
+                    table.insert(berrySpots, c)
+                    used[k] = true
                 end
             end
-            if not tooClose then
-                table.insert(berrySpots, c)
-                used[k] = true
-            end
         end
+    end
+
+    fillBerrySpots(minBerryDist)
+    if #berrySpots < berryCount and minBerryDist > 1 then
+        -- Not enough spread-out candidates — relax spacing to top up.
+        fillBerrySpots(math.max(1, math.floor(minBerryDist / 2)))
     end
 
     for _, b in ipairs(berrySpots) do
@@ -1875,10 +2003,11 @@ function pcg.placeEntities(room, tiles, w, h, rng, isStart, isEnd, opts, analysi
     end
 
     -- Spikes: reachable ceilings, spaced, avoid spawn area.
-    local spikeCount = opts.spikeCount or math.floor(#a.ceilings / 4)
+    local spikeMax = opts.spikeMax or 12
+    local spikeCount = opts.spikeCount or math.min(spikeMax, math.floor(#a.ceilings / 4))
     local hazardDensity = opts.hazardDensity
     if hazardDensity and hazardDensity > 0 then
-        spikeCount = math.floor(#a.ceilings * hazardDensity)
+        spikeCount = math.min(spikeMax, math.floor(#a.ceilings * hazardDensity))
     end
     local spikeSpots = {}
     local dangerAroundSpawn = {}
@@ -1934,7 +2063,8 @@ function pcg.placeEntities(room, tiles, w, h, rng, isStart, isEnd, opts, analysi
     -- Springs: vertical shafts with headroom and nearby wall.
     local springDensity = opts.springDensity
     if springDensity and springDensity > 0 then
-        local springCount = math.floor(#a.airCells * springDensity / 4)
+        local springMax = opts.springMax or 6
+        local springCount = math.min(springMax, math.floor(#a.airCells * springDensity / 4))
         local springSpots = {}
         for _, c in ipairs(a.airCells) do
             if c.y >= 2 and c.y <= h - 5 and c.x >= 2 and c.x <= w - 3 then
@@ -1967,11 +2097,10 @@ function pcg.placeEntitiesLegacy(room, tiles, w, h, rng, isStart, isEnd)
     local spawn
     if #floors > 0 then spawn = floors[math.floor(#floors / 4) + 1] else spawn = { x = math.floor(w / 2), y = math.floor(h / 2) } end
 
-    if isStart then
-        pcg.addEntity(room, "player", spawn.x * T, spawn.y * T)
-    end
+    -- Every room needs a spawn point (dying in a spawn-less room errors in-game).
+    pcg.addEntity(room, "player", spawn.x * T, spawn.y * T)
     if isEnd then
-        pcg.addEntity(room, "strawberry", math.floor(w * T / 2), math.floor(h * T / 2 - T * 2), { golden = true })
+        pcg.addEntity(room, "goldenBerry", math.floor(w * T / 2), math.floor(h * T / 2 - T * 2))
     end
 
     local berryCandidates = {}
@@ -1998,6 +2127,33 @@ function pcg.placeEntitiesLegacy(room, tiles, w, h, rng, isStart, isEnd)
         -- Exposed top surfaces are ceilings; spikes hang down from them.
         pcg.addEntity(room, "spikes", k.x * T, k.y * T, { direction = "down", type = "default" })
     end
+end
+
+-- Guarantee the room has at least one player spawn on safe ground.
+-- Dying in a room without a spawn point errors out in-game, so this runs as a
+-- final safety net after any placement path. Returns true if a spawn was added.
+function pcg.ensureSpawn(room, tiles, w, h)
+    for _, e in ipairs(room.entities or {}) do
+        if e._name == "player" then return false end
+    end
+    local best, bestScore = nil, -math.huge
+    if tiles then
+        for x = 1, w - 2 do
+            for y = 2, h - 2 do
+                if tiles[x][y] == "0" and tiles[x][y + 1] ~= "0" and tiles[x][y - 1] == "0" then
+                    -- Prefer low, horizontally central floor cells with head clearance.
+                    local score = y - math.abs(x - math.floor(w / 2))
+                    if score > bestScore then
+                        bestScore = score
+                        best = { x = x, y = y }
+                    end
+                end
+            end
+        end
+    end
+    if not best then best = { x = math.floor(w / 2), y = math.floor(h / 2) } end
+    pcg.addEntity(room, "player", best.x * TILE, best.y * TILE)
+    return true
 end
 
 -- Place decals with spatial awareness: background particles in air, foreground details on surfaces.

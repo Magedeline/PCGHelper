@@ -98,7 +98,7 @@ local function hasAdequateExitWidth(a, b, minWidthTiles)
     return false
 end
 
-local function buildLayout(count, minW, maxW, minH, maxH, maxRetries, rng)
+local function buildLayout(count, minW, maxW, minH, maxH, maxRetries, rng, minExitWidthTiles)
     local slots = {}
 
     local rW = randRange(rng, minW, maxW) * TILE
@@ -141,7 +141,9 @@ local function buildLayout(count, minW, maxW, minH, maxH, maxRetries, rng)
                 table.insert(slots, slot)
 
                 for j = 1, idx - 1 do
-                    if shareExit(candidate, slots[j].bounds) then
+                    -- minExitWidthTiles was previously parsed but never used;
+                    -- neighbour edges narrower than it are not real connections.
+                    if hasAdequateExitWidth(candidate, slots[j].bounds, minExitWidthTiles) then
                         table.insert(slot.neighbours, j)
                         table.insert(slots[j].neighbours, idx)
                     end
@@ -229,7 +231,7 @@ function script.prerun(args)
     if not map then return nil end
 
     local rng = pcg.makeRng(rawSeed)
-    local slots = buildLayout(count, minW, maxW, minH, maxH, maxRetries, rng)
+    local slots = buildLayout(count, minW, maxW, minH, maxH, maxRetries, rng, minExitWidth)
     if #slots == 0 then return nil end
 
     if ensureLoops then
@@ -266,9 +268,9 @@ function script.prerun(args)
                 pcg.addEntity(room, "player", TILE * 2, (hTiles - 2) * TILE)
             end
             if isEnd then
-                pcg.addEntity(room, "strawberry",
+                pcg.addEntity(room, "goldenBerry",
                     math.floor(slot.bounds.width / 2),
-                    math.floor(slot.bounds.height / 2 - TILE * 2), { golden = true })
+                    math.floor(slot.bounds.height / 2 - TILE * 2))
             end
 
             table.insert(createdRooms, room)

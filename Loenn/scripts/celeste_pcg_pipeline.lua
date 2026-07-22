@@ -20,6 +20,11 @@ local script = {
     tooltip = "End-to-end PCG: skeleton layout -> MdMC/WFC tile filling -> playability repair -> entity placement. "
               .. "Combines the skeleton + Markov scripts into a single one-shot generator.",
     parameters = {
+        -- Preset: curated parameter bundles. Anything other than "custom"
+        -- overrides the individual knobs below.
+        preset = "custom",
+        selectionMode = "max",
+
         -- Skeleton
         roomCount = 8,
         roomWidthTiles = 40,
@@ -54,7 +59,6 @@ local script = {
 
         -- Tileset improvements
         autoTile = true,
-        preserveExits = true,
         generateBG = false,
         useEnhancedBG = false,
         cleanupPasses = 2,
@@ -81,6 +85,8 @@ local script = {
         triggerMode = "camera",
     },
     fieldInformation = {
+        preset = { fieldType = "loennScripts.dropdown", options = { "custom", "quick", "simple_fair", "explore", "challenge" }, editable = false },
+        selectionMode = { fieldType = "loennScripts.dropdown", options = { "max", "median", "first" }, editable = false },
         roomCount = { fieldType = "integer" },
         roomWidthTiles = { fieldType = "integer" },
         roomHeightTiles = { fieldType = "integer" },
@@ -111,6 +117,8 @@ local script = {
         unityFbmPersistence = { fieldType = "number" },
     },
     tooltips = {
+        preset = "Curated parameter bundle. quick = small fast map; simple_fair = balanced, low-noise, fair in-game; explore = labyrinth; challenge = hazard-heavy. custom = use the knobs below as-is.",
+        selectionMode = "How to pick among passing candidates: max = highest interestingness (legacy; favours busy rooms), median = middle interestingness (avoids both noise and emptiness), first = first passing candidate (fastest).",
         roomCount = "Number of rooms to generate in the skeleton.",
         roomWidthTiles = "Width of every room in tiles (x8 px).",
         roomHeightTiles = "Height of every room in tiles (x8 px).",
@@ -138,7 +146,6 @@ local script = {
         exportRandoYaml = "Write a .rando.yaml compatible with CelesteRandomizer after generation.",
         randoOutputPath = "Path for the .rando.yaml output (relative to the map file's directory).",
         autoTile = "Auto-tiling pass: blends tile edges for smooth transitions.",
-        preserveExits = "Smart borders: preserve existing room exits/connections.",
         generateBG = "Also generate background tiles based on foreground layout.",
         useEnhancedBG = "Enhanced background: style-aware BG with depth-appropriate fill.",
         cleanupPasses = "Number of cleanup passes to remove isolated tiles and fill holes.",
@@ -174,12 +181,18 @@ local function interiorsOverlap(a, b)
     return a.x < b.right and b.x < a.right and a.y < b.bottom and b.y < a.bottom
 end
 
+-- Two rooms only count as connected when the shared edge is wide enough for
+-- carveSharedExit to actually cut a door (span >= 5 tiles). Using a smaller
+-- threshold here used to create skeleton edges that could never be carved,
+-- leaving sealed dead ends in-game.
+local MIN_CARVE_SPAN_TILES = 5
+
 local function shareExit(a, b)
     if a.bottom == b.top or b.bottom == a.top then
-        return math.min(a.right, b.right) - math.max(a.left, b.left) >= TILE * 2
+        return math.min(a.right, b.right) - math.max(a.left, b.left) >= TILE * MIN_CARVE_SPAN_TILES
     end
     if a.right == b.left or b.right == a.left then
-        return math.min(a.bottom, b.bottom) - math.max(a.top, b.top) >= TILE * 2
+        return math.min(a.bottom, b.bottom) - math.max(a.top, b.top) >= TILE * MIN_CARVE_SPAN_TILES
     end
     return false
 end
@@ -286,66 +299,76 @@ local function carveDoorVertical(tiles, w, h, yStart, doorLeft)
     end
 end
 
-local function carveSharedExit(roomA, roomB, solid)
-    local aw = math.floor(roomA.width / TILE)
-    local ah = math.floor(roomA.height / TILE)
-    local bw = math.floor(roomB.width / TILE)
-    local bh = math.floor(roomB.height / TILE)
-    if aw < 5 or ah < 6 or bw < 5 or bh < 6 then return end
+-- Compute door carve operations per slot from the skeleton geometry. The same
+-- ops are cut into scoring candidates (so exit-based playability/scoring sees
+-- the real doors) and into the final room grids in stage 4.5, so the two can
+-- never disagree.
+-- ops[slotIdx] = list of { kind = "h"|"v", edge = xStart|yStart, pos = local tile coord }
+local function computeDoorOps(slots)
+    local ops = {}
+    for i = 1, #slots do ops[i] = {} end
 
-    local a, b = roomA, roomB
-    local aW, aH, bW, bH = aw, ah, bw, bh
-
-    -- horizontal adjacency: normalise so a is the left room
-    if b.x + b.width == a.x then
-        a, b = b, a
-        aW, aH, bW, bH = bW, bH, aW, aH
-    end
-    if a.x + a.width == b.x then
-        local loPx = math.max(a.y, b.y)
-        local hiPx = math.min(a.y + a.height, b.y + b.height)
-        local span = math.floor((hiPx - loPx) / TILE)
-        if span < 5 then return end
-
-        local doorTop = math.max(
-            math.floor(loPx / TILE) + 1,
-            math.min(math.floor(hiPx / TILE) - 4,
-                     math.floor(hiPx / TILE) - 5))
-
-        local aFg = pcg.tilesStructToGrid(a.tilesFg)
-        local bFg = pcg.tilesStructToGrid(b.tilesFg)
-        if aFg and bFg then
-            carveDoorHorizontal(aFg, aW, aH, aW - 2, doorTop - math.floor(a.y / TILE), solid)
-            carveDoorHorizontal(bFg, bW, bH, 0, doorTop - math.floor(b.y / TILE), solid)
-            pcg.applyGridToRoom(a, "fg", aFg, aW, aH)
-            pcg.applyGridToRoom(b, "fg", bFg, bW, bH)
+    local function addPair(ai, bi)
+        local a, b = slots[ai].bounds, slots[bi].bounds
+        if math.floor(a.width / TILE) < 5 or math.floor(a.height / TILE) < 6
+            or math.floor(b.width / TILE) < 5 or math.floor(b.height / TILE) < 6 then
+            return
         end
-        return
+
+        -- horizontal adjacency: normalise so a is the left room
+        if b.x + b.width == a.x then
+            a, b, ai, bi = b, a, bi, ai
+        end
+        if a.x + a.width == b.x then
+            local loPx = math.max(a.y, b.y)
+            local hiPx = math.min(a.y + a.height, b.y + b.height)
+            if math.floor((hiPx - loPx) / TILE) < MIN_CARVE_SPAN_TILES then return end
+
+            local doorTop = math.max(
+                math.floor(loPx / TILE) + 1,
+                math.min(math.floor(hiPx / TILE) - 4,
+                         math.floor(hiPx / TILE) - 5))
+
+            local aW = math.floor(a.width / TILE)
+            table.insert(ops[ai], { kind = "h", edge = aW - 2, pos = doorTop - math.floor(a.y / TILE) })
+            table.insert(ops[bi], { kind = "h", edge = 0, pos = doorTop - math.floor(b.y / TILE) })
+            return
+        end
+
+        -- vertical adjacency: normalise so a is the upper room
+        if b.y + b.height == a.y then
+            a, b, ai, bi = b, a, bi, ai
+        end
+        if a.y + a.height == b.y then
+            local loPx = math.max(a.x, b.x)
+            local hiPx = math.min(a.x + a.width, b.x + b.width)
+            if math.floor((hiPx - loPx) / TILE) < MIN_CARVE_SPAN_TILES then return end
+
+            local doorLeft = math.max(
+                math.floor(loPx / TILE) + 1,
+                math.min(math.floor(hiPx / TILE) - 4,
+                         math.floor((loPx + hiPx) / 2 / TILE) - 1))
+
+            local aH = math.floor(a.height / TILE)
+            table.insert(ops[ai], { kind = "v", edge = aH - 2, pos = doorLeft - math.floor(a.x / TILE) })
+            table.insert(ops[bi], { kind = "v", edge = 0, pos = doorLeft - math.floor(b.x / TILE) })
+        end
     end
 
-    -- vertical adjacency: normalise so a is the upper room
-    if b.y + b.height == a.y then
-        a, b = b, a
-        aW, aH, bW, bH = bW, bH, aW, aH
+    for i = 1, #slots do
+        for _, j in ipairs(slots[i].neighbours) do
+            if j < i then addPair(i, j) end
+        end
     end
-    if a.y + a.height == b.y then
-        local loPx = math.max(a.x, b.x)
-        local hiPx = math.min(a.x + a.width, b.x + b.width)
-        local span = math.floor((hiPx - loPx) / TILE)
-        if span < 5 then return end
+    return ops
+end
 
-        local doorLeft = math.max(
-            math.floor(loPx / TILE) + 1,
-            math.min(math.floor(hiPx / TILE) - 4,
-                     math.floor((loPx + hiPx) / 2 / TILE) - 1))
-
-        local aFg = pcg.tilesStructToGrid(a.tilesFg)
-        local bFg = pcg.tilesStructToGrid(b.tilesFg)
-        if aFg and bFg then
-            carveDoorVertical(aFg, aW, aH, aH - 2, doorLeft - math.floor(a.x / TILE))
-            carveDoorVertical(bFg, bW, bH, 0, doorLeft - math.floor(b.x / TILE))
-            pcg.applyGridToRoom(a, "fg", aFg, aW, aH)
-            pcg.applyGridToRoom(b, "fg", bFg, bW, bH)
+local function applyDoorOps(tiles, w, h, opsList, solid)
+    for _, op in ipairs(opsList or {}) do
+        if op.kind == "h" then
+            carveDoorHorizontal(tiles, w, h, op.edge, op.pos, solid)
+        else
+            carveDoorVertical(tiles, w, h, op.edge, op.pos)
         end
     end
 end
@@ -524,9 +547,52 @@ local function exportRandoYaml(rooms, outputPath, mapFilename, endIdx)
 end
 
 -- =========================================================================
+-- Presets (paper-calibrated bundles; §4.1.2 recommends config 000011012 and
+-- backtracking depth 2). Selection modes are data-independent on purpose:
+-- absolute interestingness targets would depend on the training tileset.
+-- =========================================================================
+local PRESETS = {
+    quick = {
+        roomCount = 6, proba = 0.3, generationMode = "mdmc",
+        maxBacktrackDepth = 2, triesLimit = 8,
+        hazardDensity = 0.02, springDensity = 0.02,
+        placeDecals = false, placeTriggers = false, generateBG = false,
+        selectionMode = "first",
+    },
+    simple_fair = {
+        roomCount = 8, proba = 0.4, generationMode = "mdmc",
+        maxBacktrackDepth = 2, triesLimit = 20,
+        hazardDensity = 0.03, springDensity = 0.02,
+        selectionMode = "median",
+    },
+    explore = {
+        roomCount = 14, proba = 0.85, generationMode = "mdmc",
+        maxBacktrackDepth = 4, triesLimit = 20,
+        hazardDensity = 0.05, springDensity = 0.03,
+        selectionMode = "median",
+    },
+    challenge = {
+        roomCount = 10, proba = 0.5, generationMode = "mdmc",
+        maxBacktrackDepth = 4, triesLimit = 25,
+        hazardDensity = 0.12, springDensity = 0.04,
+        selectionMode = "max",
+    },
+}
+
+-- =========================================================================
 -- Main pipeline
 -- =========================================================================
 function script.prerun(args)
+    -- Apply preset bundle before reading any knob, so a preset run is fully
+    -- described by its name + seed (reproducible, no hidden dialog state).
+    local presetName = args.preset or "custom"
+    local preset = PRESETS[presetName]
+    if preset then
+        for k, v in pairs(preset) do args[k] = v end
+        pcg.log("Preset: " .. presetName)
+    end
+    local selectionMode = args.selectionMode or "max"
+
     local config        = args.configuration or "000011012"
     local trainSource   = args.trainSource or "all_rooms"
     local roomCount     = math.max(2, tonumber(args.roomCount) or 8)
@@ -549,7 +615,6 @@ function script.prerun(args)
     local placeEnts     = args.placeEntities ~= false
 
     local autoTile      = args.autoTile ~= false
-    local preserveExits = args.preserveExits ~= false
     local generateBG    = args.generateBG == true
     local useEnhancedBG = args.useEnhancedBG == true
     local cleanupPasses = math.max(0, tonumber(args.cleanupPasses) or 2)
@@ -634,11 +699,20 @@ function script.prerun(args)
     local slots = nil
     for skReset = 1, maxSkeletonResets do
         slots = buildSkeleton(roomCount, roomW, roomH, proba, 50, rng)
-        if #slots >= 2 then break end
+        if #slots >= roomCount then break end
     end
     if not slots or #slots < 1 then return nil end
+    if #slots < roomCount then
+        pcg.log(string.format(
+            "Skeleton shortfall: placed %d of %d requested rooms (placement retries exhausted; try smaller rooms or higher proba)",
+            #slots, roomCount))
+    end
 
     local endIdx = furthestFrom(slots, 1)
+
+    -- Door positions are fixed by the skeleton geometry; compute them once so
+    -- candidates can be scored with their real exits carved in.
+    local doorOps = computeDoorOps(slots)
 
     -- Stage 4: fill rooms
     local built = {}
@@ -658,14 +732,18 @@ function script.prerun(args)
                              generationMode == "randomwalk_cave" or generationMode == "directional_tunnel" or
                              generationMode == "cellular")
         if pcg.tableCount(probs) > 0 or isUnityMode then
-            local bestTiles, bestI = nil, -math.huge
+            local passing = {}
+            -- Reject rooms where the model gave up and filled more than ~2% of
+            -- cells with random tiles ("degeneration") — those are the rooms
+            -- players report as "too randomized".
+            local maxDegen = math.max(4, math.floor(wTiles * hTiles * 0.02))
 
             for attempt = 1, triesLimit do
-                local candidate
+                local candidate, candDegen
                 if generationMode == "wfc" then
                     candidate = pcg.wfcGenerate(adjacency, wTiles, hTiles, rng, true)
                 elseif generationMode == "hybrid" then
-                    candidate = pcg.generateMdmc(probs, offsets, wTiles, hTiles, btDepth, rng, dominant, adjacency)
+                    candidate, candDegen = pcg.generateMdmc(probs, offsets, wTiles, hTiles, btDepth, rng, dominant, adjacency)
                 elseif generationMode == "perlin_top" then
                     candidate = unity.perlinTopLayer(wTiles, hTiles, rng, dominant)
                 elseif generationMode == "perlin_cave" then
@@ -683,21 +761,48 @@ function script.prerun(args)
                 elseif generationMode == "cellular" then
                     candidate = unity.cellularAutomata(wTiles, hTiles, rng, dominant, unityBirthLimit, unityDeathLimit, unityPasses, unityInitialDensity)
                 else
-                    candidate = pcg.generateMdmc(probs, offsets, wTiles, hTiles, btDepth, rng, dominant)
+                    candidate, candDegen = pcg.generateMdmc(probs, offsets, wTiles, hTiles, btDepth, rng, dominant)
                 end
                 if not candidate then
+                elseif (candDegen or 0) > maxDegen then
+                    -- mostly-random room: throw it back
                 else
                     pcg.applyBorder(candidate, wTiles, hTiles, dominant)
+                    if carveExits then
+                        -- Cut the real doors before judging: playability and the
+                        -- AOI-based scores are meaningless on a sealed box.
+                        applyDoorOps(candidate, wTiles, hTiles, doorOps[i], dominant)
+                    end
                     if not pcg.isPlayable(candidate, wTiles, hTiles) then
                     else
                         local cI, _, _, cVar, pathLens = pcg.score(candidate, wTiles, hTiles, dominant,
                             numPaths, rng, w1, w2, w3, z1, z2, z3)
                         if not pcg.passesVarianceCheck(pathLens, cVar) then
                         elseif cI < minI then
-                        elseif cI > bestI then
-                            bestI = cI
-                            bestTiles = candidate
+                        else
+                            table.insert(passing, { tiles = candidate, I = cI })
+                            if selectionMode == "first" then break end
                         end
+                    end
+                end
+            end
+
+            -- Selection among passing candidates:
+            --   max    = highest I (legacy; with normalised entropy this no
+            --            longer degenerates into "pick the noisiest room")
+            --   median = middle I — steers away from both noise and emptiness
+            --   first  = first passing candidate (fastest)
+            local bestTiles, bestI = nil, -math.huge
+            if #passing > 0 then
+                if selectionMode == "median" then
+                    table.sort(passing, function(a, b) return a.I < b.I end)
+                    local mid = passing[math.floor((#passing + 1) / 2)]
+                    bestTiles, bestI = mid.tiles, mid.I
+                elseif selectionMode == "first" then
+                    bestTiles, bestI = passing[1].tiles, passing[1].I
+                else
+                    for _, c in ipairs(passing) do
+                        if c.I > bestI then bestTiles, bestI = c.tiles, c.I end
                     end
                 end
             end
@@ -732,15 +837,15 @@ function script.prerun(args)
             if bestTiles then
                 for pass = 1, cleanupPasses do pcg.cleanupTiles(bestTiles, wTiles, hTiles, dominant) end
                 if autoTile then pcg.autoTilePass(bestTiles, wTiles, hTiles, dominant) end
-                if preserveExits then
-                    local orig = pcg.tilesStructToGrid(room.tilesFg)
-                    if orig then pcg.preserveBordersAndExits(bestTiles, wTiles, hTiles, orig, dominant) end
-                end
+                -- (preserveExits used to run here, but pipeline rooms start empty, so the
+                -- "original" borders were all air and the pass changed nothing. Exits are
+                -- carved for real in stage 4.5.)
                 pcg.applyGridToRoom(room, "fg", bestTiles, wTiles, hTiles)
                 filled = true
 
-                local suffix = string.format("  I=%.2f", bestI)
-                if not room.name:find("I=") then room.name = room.name .. suffix end
+                -- Score goes to the log only. Encoding it in the room name broke
+                -- debug teleports and rando YAML references (spaces/'=' in names).
+                pcg.log(string.format("%s: I=%.2f", room.name, bestI))
 
                 if generateBG then
                     local bgTiles
@@ -758,12 +863,16 @@ function script.prerun(args)
                               isStart = isStart, isEnd = isEnd, slotIdx = i })
     end
 
-    -- Stage 4.5: carve aligned exits between neighbouring rooms
+    -- Stage 4.5: carve aligned exits between neighbouring rooms. Runs after
+    -- cleanup/auto-tiling so those passes can never seal a door back up, and
+    -- uses the exact ops the candidates were scored with.
     if carveExits then
-        for i = 1, #slots do
-            for _, j in ipairs(slots[i].neighbours) do
-                if j < i then
-                    carveSharedExit(built[i].room, built[j].room, dominant)
+        for _, b in ipairs(built) do
+            if #(doorOps[b.slotIdx] or {}) > 0 then
+                local fg = pcg.tilesStructToGrid(b.room.tilesFg)
+                if fg then
+                    applyDoorOps(fg, b.wTiles, b.hTiles, doorOps[b.slotIdx], dominant)
+                    pcg.applyGridToRoom(b.room, "fg", fg, b.wTiles, b.hTiles)
                 end
             end
         end
@@ -829,10 +938,14 @@ function script.prerun(args)
                 pcg.addEntity(room, "player", TILE * 2, (hTiles - 2) * TILE)
             end
             if b.isEnd then
-                pcg.addEntity(room, "strawberry", math.floor(room.width / 2),
-                    math.floor(room.height / 2 - TILE * 2), { golden = true })
+                pcg.addEntity(room, "goldenBerry", math.floor(room.width / 2),
+                    math.floor(room.height / 2 - TILE * 2))
             end
         end
+
+        -- Safety net: every room must end up with a spawn point, whatever
+        -- placement path (or none) ran above.
+        pcg.ensureSpawn(room, fg, wTiles, hTiles)
     end
 
     -- Commit rooms to the map via snapshot (undoable)
