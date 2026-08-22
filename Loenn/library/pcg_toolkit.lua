@@ -1688,6 +1688,10 @@ local entityDefaults = {
     spikes = { type = "default" },
     spring = { direction = "up" },
     goldenBerry = { winged = false, golden = true },
+    -- Vanilla key/lockBlock have no "id" pairing — any key opens any lockBlock
+    -- (one key consumed per door), so gating logic only needs a fungible count.
+    key = {},
+    lockBlock = { sprite = "wood", stepMusicProgress = false, unlock_sfx = "" },
 }
 
 function pcg.addEntity(room, name, x, y, attrs)

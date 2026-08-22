@@ -49,7 +49,7 @@ generation → playability repair → scoring → entity placement.
 | Script | Location | Purpose |
 |---|---|---|
 | **Celeste PCG Pipeline** | `Loenn/scripts/celeste_pcg_pipeline.lua` | One-shot end-to-end generation of multiple rooms. Start with a **preset**: `quick` (small fast map), `simple_fair` (balanced, low-noise, fair both in-editor and in-game), `explore` (labyrinth), `challenge` (hazard-heavy) — or `custom` to use the individual knobs. |
-| **Celeste Skeleton Generator** | `Loenn/scripts/celeste_skeleton.lua` | Lays out non-overlapping, edge-connected empty rooms (start room spawn + golden berry end room). |
+| **Celeste Skeleton Generator** | `Loenn/scripts/celeste_skeleton.lua` | Lays out non-overlapping, edge-connected empty rooms (start room spawn + golden berry end room). Optionally gates some connections behind a `lockBlock` + key for metroidvania-style progression. |
 | **Markov Level Generator** | `Loenn/scripts/markov_level_gen.lua` | Fills the current/selected rooms with MdMC / WFC / Hybrid / Unity-generated tiles. |
 
 ## Installation
@@ -87,6 +87,9 @@ Generated maps are held to a checkable standard, not a vibe:
 - scoring follows the paper (§4.1–4.3) with normalized entropy, path-based
   area-of-interest, and capped scarcity, so "most interesting" can no longer
   mean "most random"
+- optional lock-and-key gating (`lockCount` in the Skeleton Generator) only
+  ever places keys in rooms reachable from spawn without crossing a locked
+  door, so every key is guaranteed collectible before it's needed
 
 ## Companion CLI
 

@@ -29,6 +29,7 @@ local script = {
         minExitWidthTiles = 3,
         validateConnectivity = true,
         ensureLoopbacks = false,
+        lockCount = 2,
     },
     fieldInformation = {
         seed = { fieldType = "integer" },
@@ -39,6 +40,7 @@ local script = {
         maxRoomHeightTiles = { fieldType = "integer" },
         maxRetries = { fieldType = "integer" },
         minExitWidthTiles = { fieldType = "integer" },
+        lockCount = { fieldType = "integer" },
     },
     tooltips = {
         roomCount = "Number of rooms to generate.",
@@ -52,6 +54,9 @@ local script = {
         minExitWidthTiles = "Minimum exit width in tiles. Ensures connections between rooms are wide enough for Madeline to pass through (default 3 = 24px).",
         validateConnectivity = "Validate that all rooms are reachable from the start room. Warns if any orphaned rooms are detected.",
         ensureLoopbacks = "Add extra connections to create loops in the layout (non-linear). Makes the map more interconnected and exploration-friendly.",
+        lockCount = "Metroidvania-style progression gating: number of skeleton connections to guard with a lockBlock. "
+                   .. "One fungible key is placed per lock, always in a room reachable from spawn without crossing "
+                   .. "any locked door, so every key is guaranteed collectible before it's needed. 0 disables gating.",
     },
 }
 
@@ -214,6 +219,112 @@ local function addLoopbackConnections(slots, rng, maxLoops)
     end
 end
 
+-- =========================================================================
+-- Metroidvania progression gating
+-- Vanilla key/lockBlock have no "id" pairing: any key opens any lockBlock,
+-- one key consumed per door. That makes fairness simple — place every key
+-- in the "core" (rooms reachable from spawn crossing zero locked edges) and
+-- every key is guaranteed collectible before any door needs it, regardless
+-- of which order the player opens doors in or how deeply locks nest.
+-- =========================================================================
+
+local function buildChildren(slots)
+    local children = {}
+    for i = 1, #slots do children[i] = {} end
+    for i = 2, #slots do
+        table.insert(children[slots[i].parentIdx], i)
+    end
+    return children
+end
+
+-- subtree[i] = set of i and all its descendants (via the spanning tree).
+local function computeSubtrees(children)
+    local subtree = {}
+    local function dfs(i)
+        local set = { [i] = true }
+        for _, c in ipairs(children[i]) do
+            for k in pairs(dfs(c)) do set[k] = true end
+        end
+        subtree[i] = set
+        return set
+    end
+    dfs(1)
+    return subtree
+end
+
+-- Picks `lockCount` distinct tree edges to gate. Returns:
+--   lockedRooms: list of room indices whose incoming edge is locked
+--   coreRooms:   room indices reachable from spawn without crossing any lock
+--                (room 1 is always in this set, since subtrees never contain it)
+local function chooseLocks(slots, lockCount, rng)
+    lockCount = math.max(0, math.min(lockCount, #slots - 1))
+    if lockCount == 0 then return {}, { 1 } end
+
+    local candidates = {}
+    for i = 2, #slots do table.insert(candidates, i) end
+    for i = #candidates, 2, -1 do
+        local j = rng:next(i) + 1
+        candidates[i], candidates[j] = candidates[j], candidates[i]
+    end
+
+    local subtree = computeSubtrees(buildChildren(slots))
+    local lockedRooms = {}
+    for k = 1, lockCount do table.insert(lockedRooms, candidates[k]) end
+
+    local inLockedSubtree = {}
+    for _, i in ipairs(lockedRooms) do
+        for k in pairs(subtree[i]) do inLockedSubtree[k] = true end
+    end
+    local coreRooms = {}
+    for i = 1, #slots do
+        if not inLockedSubtree[i] then table.insert(coreRooms, i) end
+    end
+
+    return lockedRooms, coreRooms
+end
+
+-- Shared-edge span between two room rects: "h" (stacked, span along x) or
+-- "v" (side-by-side, span along y). Mirrors shareExit's adjacency check.
+local function doorwaySpan(a, b)
+    if a.bottom == b.top or b.bottom == a.top then
+        return "h", math.max(a.left, b.left), math.min(a.right, b.right)
+    end
+    if a.right == b.left or b.right == a.left then
+        return "v", math.max(a.top, b.top), math.min(a.bottom, b.bottom)
+    end
+    return nil
+end
+
+-- Places a fixed 32x32 lockBlock in the child room, flush against the wall
+-- it shares with the parent, centred on the doorway overlap.
+local function addLockBlock(childRoom, childBounds, parentBounds)
+    local axis, lo, hi = doorwaySpan(parentBounds, childBounds)
+    if not axis then return false end
+    local mid = math.floor((lo + hi) / 2)
+
+    local localX, localY
+    if axis == "h" then
+        local maxX = math.max(TILE, childBounds.width - TILE - 32)
+        localX = math.max(TILE, math.min(maxX, mid - childBounds.x - 16))
+        localY = (childBounds.top == parentBounds.bottom) and 0 or (childBounds.height - 32)
+    else
+        local maxY = math.max(TILE, childBounds.height - TILE - 32)
+        localY = math.max(TILE, math.min(maxY, mid - childBounds.y - 16))
+        localX = (childBounds.left == parentBounds.right) and 0 or (childBounds.width - 32)
+    end
+
+    pcg.addEntity(childRoom, "lockBlock", localX, localY)
+    return true
+end
+
+-- Spreads keys placed in the same core room across a small grid so repeated
+-- calls don't stack them on top of each other.
+local function addKey(room, bounds, slotIndex)
+    local kx = math.min(TILE * 2 + (slotIndex % 3) * TILE * 2, math.max(TILE, bounds.width - TILE * 2))
+    local ky = math.min(TILE * 3 + math.floor(slotIndex / 3) * TILE * 2, math.max(TILE, bounds.height - TILE * 2))
+    pcg.addEntity(room, "key", kx, ky)
+end
+
 function script.prerun(args)
     local count = math.max(2, tonumber(args.roomCount) or 12)
     local minW = math.max(5, tonumber(args.minRoomWidthTiles) or 30)
@@ -226,6 +337,7 @@ function script.prerun(args)
     local minExitWidth = math.max(2, tonumber(args.minExitWidthTiles) or 3)
     local validateConn = args.validateConnectivity ~= false
     local ensureLoops = args.ensureLoopbacks == true
+    local lockCount = math.max(0, tonumber(args.lockCount) or 2)
 
     local map = state.map
     if not map then return nil end
@@ -252,6 +364,8 @@ function script.prerun(args)
         if d > endDist then endDist = d endIdx = i end
     end
 
+    local lockedRooms, coreRooms = chooseLocks(slots, lockCount, rng)
+
     local createdRooms = {}
 
     local function forward()
@@ -275,6 +389,22 @@ function script.prerun(args)
 
             table.insert(createdRooms, room)
             mapItemUtils.addItem(map, room, false)
+        end
+
+        local placedLocks = 0
+        for li, childIdx in ipairs(lockedRooms) do
+            local childSlot = slots[childIdx]
+            local parentSlot = slots[childSlot.parentIdx]
+            if addLockBlock(createdRooms[childIdx], childSlot.bounds, parentSlot.bounds) then
+                local coreIdx = coreRooms[((li - 1) % #coreRooms) + 1]
+                addKey(createdRooms[coreIdx], slots[coreIdx].bounds, li - 1)
+                placedLocks = placedLocks + 1
+            end
+        end
+        if placedLocks > 0 then
+            pcg.log(string.format(
+                "Metroidvania gating: %d locked door(s), %d key(s) across %d core room(s)",
+                placedLocks, placedLocks, #coreRooms))
         end
     end
 
