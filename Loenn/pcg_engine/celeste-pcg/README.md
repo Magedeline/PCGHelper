@@ -43,6 +43,22 @@ out/<name>/
   ogmo/<name>_0.json … _N.json
 ```
 
+### `analyze` — playability/connectivity report for an existing `.bin`
+
+Read-only checks against any Celeste `.bin` — vanilla, hand-authored, or one
+this tool generated: does every room have a player spawn, is its open space
+one connected pocket reachable from that spawn, and do rooms whose world
+rects touch an edge actually have a carved opening on that shared border.
+
+```bash
+node bin/celeste-pcg.js analyze --bin path/to/Map.bin [--json]
+```
+
+Exits `0` when every room has a spawn and full reachability, `2` otherwise
+(rooms that geometrically touch with no door are reported as a note and
+don't affect the exit code — not every neighbour on the grid has to be a
+door). `--json` prints the raw report instead of the human-readable summary.
+
 ## How it generates
 
 **Approach: path‑carve platformer** — chosen over cellular‑automata caves and

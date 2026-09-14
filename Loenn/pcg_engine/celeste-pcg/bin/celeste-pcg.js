@@ -265,12 +265,104 @@ function mainImport(argv) {
 	);
 }
 
+function parseAnalyzeArgs(argv) {
+	const opts = { bin: null, json: false };
+	for (let i = 0; i < argv.length; i++) {
+		const a = argv[i];
+		const next = () => argv[++i];
+		switch (a) {
+			case '--bin': opts.bin = path.resolve(next()); break;
+			case '--json': opts.json = true; break;
+			case '-h':
+			case '--help': opts.help = true; break;
+			default:
+				console.error(`unknown arg: ${a}`);
+				opts.help = true;
+		}
+	}
+	return opts;
+}
+
+const ANALYZE_HELP = `celeste-pcg analyze — playability/connectivity report for an existing Celeste .bin
+
+usage: celeste-pcg analyze --bin <path> [options]
+
+  --bin <path>   Celeste .bin map to inspect (required) — vanilla, hand-authored, or generated
+  --json         print the raw report as JSON instead of a human-readable summary
+
+checks:
+  - every room has a player spawn, and its open space is one connected pocket reachable from it
+  - rooms whose world rects touch an edge actually have a carved opening on that shared border
+`;
+
+function formatAnalyzeReport(r) {
+	const lines = [];
+	lines.push(`celeste-pcg analyze: package="${r.packageName}"  rooms=${r.roomCount}`);
+	for (const room of r.rooms) {
+		const pct = room.reachablePct == null ? 'n/a' : `${Math.round(room.reachablePct * 100)}%`;
+		lines.push(
+			`  ${room.name}  ${room.wTiles}x${room.hTiles}  density=${(room.density * 100).toFixed(1)}%  ` +
+				`spawn=${room.hasSpawn ? 'yes' : 'no'}  reachable=${pct}  entities=${room.entityCount}  triggers=${room.triggerCount}`,
+		);
+		for (const w of room.warnings) lines.push(`    ! ${w}`);
+	}
+	if (r.sealedAdjacencies.length) {
+		lines.push('  rooms whose rects touch with no carved opening (may be intentional — not every geometric neighbour has to be a door):');
+		for (const s of r.sealedAdjacencies) lines.push(`    ? ${s.a} <-> ${s.b}`);
+	}
+	const hardIssues = r.rooms.reduce((n, room) => n + room.warnings.length, 0);
+	const summary = [];
+	summary.push(hardIssues === 0 ? 'no playability issues found' : `${hardIssues} playability issue(s) found`);
+	if (r.sealedAdjacencies.length) summary.push(`${r.sealedAdjacencies.length} untouched adjacency note(s)`);
+	lines.push(`\n${summary.join(', ')}`);
+	return lines.join('\n');
+}
+
+function mainAnalyze(argv) {
+	const opts = parseAnalyzeArgs(argv);
+	if (opts.help || !opts.bin) {
+		process.stdout.write(ANALYZE_HELP);
+		process.exit(opts.help ? 0 : 1);
+	}
+
+	const { analyzeBin } = require('../src/analyze');
+	let r;
+	try {
+		r = analyzeBin(opts.bin);
+	} catch (e) {
+		console.error(`analyze: ${e.message}`);
+		process.exit(1);
+	}
+
+	if (opts.json) {
+		process.stdout.write(JSON.stringify(r, null, 2) + '\n');
+	} else {
+		process.stdout.write(formatAnalyzeReport(r) + '\n');
+	}
+
+	const hardIssues = r.rooms.reduce((n, room) => n + room.warnings.length, 0);
+	process.exit(hardIssues === 0 ? 0 : 2);
+}
+
 if (require.main === module) {
 	if (process.argv[2] === 'import-bin') {
 		mainImport(process.argv.slice(3));
+	} else if (process.argv[2] === 'analyze') {
+		mainAnalyze(process.argv.slice(3));
 	} else {
 		main();
 	}
 }
 
-module.exports = { main, parseArgs, HELP, layoutMap, asciiPreview, mainImport, parseImportArgs };
+module.exports = {
+	main,
+	parseArgs,
+	HELP,
+	layoutMap,
+	asciiPreview,
+	mainImport,
+	parseImportArgs,
+	mainAnalyze,
+	parseAnalyzeArgs,
+	formatAnalyzeReport,
+};

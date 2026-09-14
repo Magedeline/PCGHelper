@@ -11,6 +11,7 @@ const { buildMapTree, encodeChapterBin } = require('../src/emit-bin');
 const { roundTripAscii, roomsOverlap } = require('./helpers');
 const { roomToOgmoLevel, indexProject } = require('../src/emit-ogmo');
 const { importBin } = require('../src/import-bin');
+const { analyzeBin } = require('../src/analyze');
 const os = require('os');
 
 /** the repo's real celeste.ogmo lives at Ogmo/ogmo/celeste.ogmo, one level up
@@ -328,6 +329,88 @@ test('import-bin: decoding a generated .bin reproduces the ogmo emitter\'s own J
 		const actual = JSON.parse(fs.readFileSync(path.join(tmpDir, `${room.name}.json`), 'utf8'));
 		assert.deepEqual(actual, expected, `${room.name}: import-bin output matches the ogmo emitter's own output`);
 	}
+
+	fs.rmSync(tmpDir, { recursive: true, force: true });
+});
+
+/* ---------------------------------------------------------------- analyze */
+
+test('analyze: a freshly generated chapter has full spawn reachability and no warnings', () => {
+	const chapter = generateChapter({ seed: 'analyze-clean', rooms: 6, name: 'AnalyzeClean' });
+	const bin = encodeChapterBin(chapter, chapter.name);
+
+	const tmpDir = fs.mkdtempSync(path.join(os.tmpdir(), 'celeste-pcg-analyze-test-'));
+	const binPath = path.join(tmpDir, 'AnalyzeClean.bin');
+	fs.writeFileSync(binPath, bin);
+
+	const r = analyzeBin(binPath);
+	assert.equal(r.roomCount, chapter.rooms.length);
+	for (const room of r.rooms) {
+		assert.equal(room.hasSpawn, true, `${room.name}: has a player spawn`);
+		assert.equal(room.reachablePct, 1, `${room.name}: every open cell is reachable from spawn`);
+		assert.deepEqual(room.warnings, []);
+	}
+
+	fs.rmSync(tmpDir, { recursive: true, force: true });
+});
+
+test('analyze: flags an unreachable pocket and a room with no spawn', () => {
+	const tree = {
+		name: 'Map',
+		attrs: {},
+		children: [
+			{
+				name: 'levels',
+				attrs: {},
+				children: [
+					{
+						name: 'level',
+						attrs: { name: 'split', x: 0, y: 0, width: 40, height: 24 },
+						children: [
+							{
+								name: 'solids',
+								attrs: {},
+								innerText: '00100\n00100\n00100',
+								children: [],
+							},
+							{
+								name: 'entities',
+								attrs: {},
+								children: [{ name: 'player', attrs: { id: 1, x: 0, y: 8 }, children: [] }],
+							},
+						],
+					},
+					{
+						name: 'level',
+						attrs: { name: 'empty', x: 40, y: 0, width: 24, height: 24 },
+						children: [
+							{ name: 'solids', attrs: {}, innerText: '000\n000\n000', children: [] },
+							{ name: 'entities', attrs: {}, children: [] },
+						],
+					},
+				],
+			},
+		],
+	};
+
+	const tmpDir = fs.mkdtempSync(path.join(os.tmpdir(), 'celeste-pcg-analyze-broken-'));
+	const binPath = path.join(tmpDir, 'Split.bin');
+	fs.writeFileSync(binPath, encodeMap(tree, 'Split'));
+
+	const r = analyzeBin(binPath);
+	const split = r.rooms.find((room) => room.name === 'split');
+	const empty = r.rooms.find((room) => room.name === 'empty');
+
+	assert.equal(split.hasSpawn, true);
+	assert.ok(split.reachablePct < 1, 'the column of solid tiles splits the room into two pockets');
+	assert.ok(split.warnings.some((w) => w.includes('reachable from spawn')));
+
+	assert.equal(empty.hasSpawn, false);
+	assert.ok(empty.warnings.some((w) => w.includes('no player spawn')));
+
+	// the two rooms share a full vertical edge (x=40) with open cells on both
+	// sides, so this is NOT a sealed adjacency
+	assert.deepEqual(r.sealedAdjacencies, []);
 
 	fs.rmSync(tmpDir, { recursive: true, force: true });
 });

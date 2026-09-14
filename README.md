@@ -52,6 +52,7 @@ generation → playability repair → scoring → entity placement.
 | **Celeste Skeleton Generator** | `Loenn/scripts/celeste_skeleton.lua` | Lays out non-overlapping, edge-connected empty rooms (start room spawn + golden berry end room). Optionally gates some connections behind a `lockBlock` + key for metroidvania-style progression. |
 | **Markov Level Generator** | `Loenn/scripts/markov_level_gen.lua` | Fills the current/selected rooms with MdMC / WFC / Hybrid / Unity-generated tiles. |
 | **Celeste PCG Runner** | `Loenn/scripts/celeste_pcg_runner.lua` | Alternate generator: deterministic path-carve layout (guaranteed-traversable by construction, vs. MdMC/WFC above). Writes a brand-new standalone chapter to disk via the bundled [celeste-pcg](Loenn/pcg_engine/celeste-pcg) Node tool instead of editing the open map. Requires Node.js on PATH — see [Dependencies](#dependencies). |
+| **Analyze Map (Node)** | `Loenn/scripts/celeste_pcg_analyze.lua` | Read-only playability/connectivity report for the **currently open, saved** map: per-room spawn + reachable-space checks, plus rooms that touch on the world grid with no carved opening between them. Logs to the Lönn console; does not change the map. Requires Node.js on PATH. |
 
 ## Installation
 
@@ -108,7 +109,16 @@ pcgscene scan MyMap.bin
 
 - Everest 1.808.0+
 - LoennScripts 1.0.8+ (optional, for script UI fields)
-- Node.js 18+ on PATH (optional, only needed for the **Celeste PCG Runner** script — the other Lönn scripts are pure Lua and need nothing extra)
+- Node.js 18+ on PATH (optional, only needed for the **Celeste PCG Runner** and **Analyze Map (Node)** scripts — the other Lönn scripts are pure Lua and need nothing extra)
+
+## Dev scripts
+
+Repo-root Node scripts for maintaining the mod (not needed to just play it):
+
+| Script | Purpose |
+|---|---|
+| `node scripts/validate.js` | Pre-release content check: everest.yaml sanity, every Lönn script looks well-formed, the vendored [celeste-pcg](Loenn/pcg_engine/celeste-pcg) test suite passes, and a generate→analyze smoke test comes back clean. Runs in CI on every push/PR (`.github/workflows/test.yml`). |
+| `node scripts/package-release.js` | Builds `dist/PCGHelper.zip` via `git archive` (tracked files only, matching the layout of every past release: `everest.yaml` + `Loenn/` at the zip root). Refuses to run with uncommitted changes. Packaging only — attaching it to a GitHub release is a separate, manual step. |
 
 ## Disclaimer
 
