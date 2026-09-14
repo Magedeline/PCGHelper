@@ -51,6 +51,7 @@ generation → playability repair → scoring → entity placement.
 | **Celeste PCG Pipeline** | `Loenn/scripts/celeste_pcg_pipeline.lua` | One-shot end-to-end generation of multiple rooms. Start with a **preset**: `quick` (small fast map), `simple_fair` (balanced, low-noise, fair both in-editor and in-game), `explore` (labyrinth), `challenge` (hazard-heavy) — or `custom` to use the individual knobs. |
 | **Celeste Skeleton Generator** | `Loenn/scripts/celeste_skeleton.lua` | Lays out non-overlapping, edge-connected empty rooms (start room spawn + golden berry end room). Optionally gates some connections behind a `lockBlock` + key for metroidvania-style progression. |
 | **Markov Level Generator** | `Loenn/scripts/markov_level_gen.lua` | Fills the current/selected rooms with MdMC / WFC / Hybrid / Unity-generated tiles. |
+| **Celeste PCG Runner** | `Loenn/scripts/celeste_pcg_runner.lua` | Alternate generator: deterministic path-carve layout (guaranteed-traversable by construction, vs. MdMC/WFC above). Writes a brand-new standalone chapter to disk via the bundled [celeste-pcg](Loenn/pcg_engine/celeste-pcg) Node tool instead of editing the open map. Requires Node.js on PATH — see [Dependencies](#dependencies). |
 
 ## Installation
 
@@ -107,6 +108,7 @@ pcgscene scan MyMap.bin
 
 - Everest 1.808.0+
 - LoennScripts 1.0.8+ (optional, for script UI fields)
+- Node.js 18+ on PATH (optional, only needed for the **Celeste PCG Runner** script — the other Lönn scripts are pure Lua and need nothing extra)
 
 ## Disclaimer
 

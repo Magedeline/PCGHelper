@@ -1,0 +1,15 @@
+{
+  "name": "celeste-pcg",
+  "version": "0.1.0",
+  "description": "Procedural multi-room chapter generator for Celeste mods. One generator core, two emitters: editable Ogmo .json levels and a directly-loadable Celeste .bin map.",
+  "type": "commonjs",
+  "bin": {
+    "celeste-pcg": "bin/celeste-pcg.js"
+  },
+  "scripts": {
+    "gen": "node bin/celeste-pcg.js",
+    "test": "node --test test/*.test.js"
+  },
+  "license": "MIT",
+  "private": true
+}
