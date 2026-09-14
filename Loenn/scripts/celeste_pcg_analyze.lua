@@ -25,7 +25,12 @@ local script = {
               .. "and rooms that touch on the world grid with no carved opening between them. "
               .. "Read-only -- logs results, does not change the map. Requires Node.js on PATH and a "
               .. "saved map.",
-    parameters = {},
+    parameters = {
+        json = false,
+    },
+    tooltips = {
+        json = "Log the raw JSON report instead of the human-readable summary.",
+    },
 }
 
 local function scriptDir()
@@ -58,7 +63,11 @@ function script.prerun(args)
     end
     io.close(check)
 
-    local cmd = string.format("node %s analyze --bin %s 2>&1", quote(nodeScript), quote(mapPath))
+    local json = args.json == true
+    local cmd = string.format(
+        "node %s analyze --bin %s%s 2>&1",
+        quote(nodeScript), quote(mapPath), json and " --json" or ""
+    )
     local proc = io.popen(cmd, "r")
     if not proc then
         pcg.log("Analyze Map: failed to launch Node -- is it installed and on PATH?")
