@@ -1,0 +1,23 @@
+  ok  rng: next() matches rng.js for seed celeste-pcg
+  ok  rng: int(0,99) matches rng.js for seed celeste-pcg
+  ok  rng: next() matches rng.js for seed pmpg:topology
+  ok  rng: int(0,99) matches rng.js for seed pmpg:topology
+  ok  rng: next() matches rng.js for seed a-00
+  ok  rng: int(0,99) matches rng.js for seed a-00
+  ok  rng: next() matches rng.js for seed 42
+  ok  rng: int(0,99) matches rng.js for seed 42
+  ok  rng: next() matches rng.js for seed 0
+  ok  rng: int(0,99) matches rng.js for seed 0
+  ok  rng: next() matches rng.js for seed hello world
+  ok  rng: int(0,99) matches rng.js for seed hello world
+  ok  rng: next() matches rng.js for seed 
+  ok  rng: int(0,99) matches rng.js for seed 
+  ok  rng: pick/shuffle stay in range and use every element
+  ok  grid: fillRect/set/get/solid/toInnerText/toFlatArray match grid.js
+  ok  grid: out-of-bounds set is a no-op, not an error
+  ok  binary_packer: mixed value types survive a round-trip
+  ok  binary_packer: negative/large ints and empty strings round-trip
+  ok  binary_packer: innerText round-trips exactly, including newlines
+  ok  binary_packer: decodes a fixture ENCODED BY THE REAL JS ENCODER (cross-language check)
+
+21 passed, 0 failed
