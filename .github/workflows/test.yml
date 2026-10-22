@@ -15,4 +15,8 @@ jobs:
       - uses: actions/setup-node@v4
         with:
           node-version: 22
-      - run: node scripts/validate.js
+      # LÖVE is LuaJIT, the runtime Lönn runs on: validate.js uses it to run
+      # the two pure-Lua test suites (celeste-pcg's Lua port and the seleCte
+      # port). xvfb only exists so a headless runner never trips SDL.
+      - run: sudo apt-get update && sudo apt-get install -y love xvfb
+      - run: xvfb-run -a node scripts/validate.js
