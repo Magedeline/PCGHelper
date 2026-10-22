@@ -11,11 +11,23 @@
 -- wall-grab. "Playable" means a path through empty space exists. This is
 -- the comparison baseline seleCte keeps on purpose; its docs say so.
 --
--- The one change: the Python rescans its open and closed lists linearly per
--- child (62% of its runtime in Node.__eq__, by its own profile). Here both
--- are keyed by position, which is what its author says removes essentially
--- all of that cost. The search itself - costs, heuristic, shuffled expansion
--- order, iteration cap - is the same.
+-- Two changes to the search. The Python rescans its open and closed lists
+-- linearly per child (62% of its runtime in Node.__eq__, by its own
+-- profile); here both are keyed by position, which is what its author says
+-- removes essentially all of that cost. Costs, heuristic, shuffled expansion
+-- order and the iteration cap are the same.
+--
+-- The second is a deliberate deviation. The Python appends a child to the
+-- open list whenever its g is not WORSE than an open copy, and never checks
+-- whether a popped node was already closed - so every tie (and moving down
+-- costs 0, so ties are everywhere) adds a duplicate that is later popped,
+-- counted against the iteration cap, and re-expanded into more duplicates.
+-- The cap is the room's area, meant to let the search visit every cell
+-- once; on a 40x23 room the churn fits under it, on a 200x200 room it does
+-- not, and A* gives up on points a flood fill reaches in a few thousand
+-- steps. Here a cell is expanded once (a stale pop is discarded and not
+-- counted) and only a strictly better g re-enters the open list, so the cap
+-- is a true bound on cells visited and a reachable goal is always found.
 
 local function req(name)
 	local ok, mods = pcall(require, "mods")
@@ -87,6 +99,65 @@ function M.minDistToSafeGround(data, r, c)
 	return limit
 end
 
+-- The same distance for every cell at once, as a flat array indexed
+-- (r - 1) * w + c. A multi-source flood fill from every safe cell that only
+-- steps up, left, right and up-diagonally: along such moves the step count
+-- to a cell at or above the source is exactly the Chebyshev distance, so
+-- each cell ends with the distance to its nearest safe cell at or below it.
+-- Cells no safe cell reaches get max(h, w), as minDistToSafeGround does.
+-- O(h * w), against the per-cell rings that cost A* most of its time on
+-- large rooms. Only the distance to safe ground is read, so a tile's
+-- passability does not matter here.
+function M.safeGroundMap(data)
+	local h = #data
+	local w = #data[1]
+	local limit = math.max(h, w)
+	local dist = {}
+	local queue, head, tail = {}, 1, 0
+	for r = 1, h do
+		local row, base = data[r], (r - 1) * w
+		for c = 1, w do
+			if SAFE[row[c]] then
+				dist[base + c] = 0
+				tail = tail + 1
+				queue[tail] = base + c
+			else
+				dist[base + c] = limit
+			end
+		end
+	end
+	while head <= tail do
+		local idx = queue[head]
+		head = head + 1
+		local d = dist[idx] + 1
+		local r = math.floor((idx - 1) / w) + 1
+		local c = idx - (r - 1) * w
+		-- (r, c-1), (r, c+1), (r-1, c-1), (r-1, c), (r-1, c+1)
+		if c > 1 and dist[idx - 1] > d then
+			dist[idx - 1] = d
+			tail = tail + 1
+			queue[tail] = idx - 1
+		end
+		if c < w and dist[idx + 1] > d then
+			dist[idx + 1] = d
+			tail = tail + 1
+			queue[tail] = idx + 1
+		end
+		if r > 1 then
+			local up = idx - w
+			for dc = -1, 1 do
+				local cc = c + dc
+				if cc >= 1 and cc <= w and dist[up + dc] > d then
+					dist[up + dc] = d
+					tail = tail + 1
+					queue[tail] = up + dc
+				end
+			end
+		end
+	end
+	return dist
+end
+
 -- =========================================================================
 -- Binary min-heap on f
 -- =========================================================================
@@ -145,9 +216,11 @@ local STRAIGHT_COSTS = { 1.0, 1.0, 1.0, 1.0 }
 -- Returns the {r, c} path from `start` to `goal` through `maze` (0 = open),
 -- or an empty list when none was found before `maxIterations` expansions
 -- (default: the cell count). `data` is the room's tile grid, used to score
--- how close a step stays to safe ground. `rng` shuffles the expansion order
+-- how close a step stays to safe ground - `safeMap` is its safeGroundMap,
+-- computed here when the caller has not already (callers that run several
+-- searches on one room pass it in). `rng` shuffles the expansion order
 -- each iteration, as the original does to avoid a decision bias.
-function M.astar(data, maze, start, goal, rng, maxIterations, allowDiagonal)
+function M.astar(data, maze, start, goal, rng, maxIterations, allowDiagonal, safeMap)
 	if allowDiagonal == nil then
 		allowDiagonal = true
 	end
@@ -163,15 +236,9 @@ function M.astar(data, maze, start, goal, rng, maxIterations, allowDiagonal)
 		order[i] = i
 	end
 
-	local distCache = {}
+	safeMap = safeMap or M.safeGroundMap(data)
 	local function safeDist(r, c)
-		local key = r * (w + 2) + c
-		local d = distCache[key]
-		if not d then
-			d = M.minDistToSafeGround(data, r, c)
-			distCache[key] = d
-		end
-		return d
+		return safeMap[(r - 1) * w + c]
 	end
 
 	local function key(r, c)
@@ -186,39 +253,41 @@ function M.astar(data, maze, start, goal, rng, maxIterations, allowDiagonal)
 
 	local iterations = 0
 	while #open > 0 do
-		iterations = iterations + 1
-		if iterations > maxIter then
-			return {}, iterations
-		end
-		rng:shuffle(order)
-
 		local current = heapPop(open)
-		closed[key(current.r, current.c)] = true
-
-		if current.r == goalR and current.c == goalC then
-			local path = {}
-			local node = current
-			while node do
-				table.insert(path, 1, { node.r, node.c })
-				node = node.parent
+		local ck = key(current.r, current.c)
+		if not closed[ck] then
+			-- an entry superseded by a better g for the same cell is dropped
+			-- here without counting as an iteration
+			iterations = iterations + 1
+			if iterations > maxIter then
+				return {}, iterations
 			end
-			return path, iterations
-		end
+			rng:shuffle(order)
+			closed[ck] = true
 
-		for _, pick in ipairs(order) do
-			local move = moves[pick]
-			local nr, nc = current.r + move[1], current.c + move[2]
-			if nr >= 1 and nr <= h and nc >= 1 and nc <= w and maze[nr][nc] == 0 then
-				local k = key(nr, nc)
-				if not closed[k] then
-					local g = current.g + (costs[pick] + safeDist(nr, nc) / 10) * area
-					local best = openBest[k]
-					if not (best and g > best) then
-						local dr, dc = nr - goalR, nc - goalC
-						local hh = dr * dr + dc * dc
-						heapPush(open, { r = nr, c = nc, g = g, h = hh, f = g + hh, parent = current })
+			if current.r == goalR and current.c == goalC then
+				local path = {}
+				local node = current
+				while node do
+					table.insert(path, 1, { node.r, node.c })
+					node = node.parent
+				end
+				return path, iterations
+			end
+
+			for _, pick in ipairs(order) do
+				local move = moves[pick]
+				local nr, nc = current.r + move[1], current.c + move[2]
+				if nr >= 1 and nr <= h and nc >= 1 and nc <= w and maze[nr][nc] == 0 then
+					local k = key(nr, nc)
+					if not closed[k] then
+						local g = current.g + (costs[pick] + safeDist(nr, nc) / 10) * area
+						local best = openBest[k]
 						if not best or g < best then
 							openBest[k] = g
+							local dr, dc = nr - goalR, nc - goalC
+							local hh = dr * dr + dc * dc
+							heapPush(open, { r = nr, c = nc, g = g, h = hh, f = g + hh, parent = current })
 						end
 					end
 				end
@@ -241,9 +310,10 @@ function M.extractRoomPath(room, maxIterations, rng)
 	if #points < 2 then
 		return {}
 	end
+	local safeMap = M.safeGroundMap(room.data)
 	local path = {}
 	for k = 1, #points - 1 do
-		path = M.astar(room.data, maze, points[k], points[k + 1], rng, maxIterations)
+		path = M.astar(room.data, maze, points[k], points[k + 1], rng, maxIterations, nil, safeMap)
 		if #path == 0 then
 			return {}
 		end
@@ -265,8 +335,9 @@ end
 -- is_valid_special: whether `point` reaches every exit.
 function M.isValidSpecial(room, point, maxIterations, rng)
 	local maze = room:extractAstarReadyData()
+	local safeMap = M.safeGroundMap(room.data)
 	for _, exitPoint in ipairs(room:getStartingEndingPoints()) do
-		local path = M.astar(room.data, maze, point, exitPoint, rng, maxIterations)
+		local path = M.astar(room.data, maze, point, exitPoint, rng, maxIterations, nil, safeMap)
 		if #path == 0 then
 			return false
 		end
