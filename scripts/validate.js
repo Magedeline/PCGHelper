@@ -16,6 +16,11 @@
 	     through `celeste-pcg analyze` and make sure it comes back clean --
 	     this is what would actually break for a player if steps 1-3 all
 	     passed but the two tools drifted apart
+	  5. the two pure-Lua test suites (Loenn/pcg_engine/celeste-pcg/lua/test
+	     and Loenn/library/selecte/test), run under LOVE (= LuaJIT, the
+	     runtime Loenn uses) when a `love` binary can be found -- skipped
+	     with a note otherwise, since not every dev box has LOVE installed.
+	     CI installs it, so there they always run.
 
 	Exits non-zero (and prints every failure, not just the first) if anything
 	is wrong.
@@ -115,10 +120,71 @@ function checkSmokeGenerateAnalyze() {
 	}
 }
 
+function findLove() {
+	const candidates = process.platform === 'win32'
+		? ['lovec', 'love', 'C:\\Program Files\\LOVE\\lovec.exe', 'C:\\Program Files\\LOVE\\love.exe']
+		: ['love'];
+	for (const c of candidates) {
+		if (c.includes(path.sep) || c.includes('\\')) {
+			if (fs.existsSync(c)) return c;
+			continue;
+		}
+		try {
+			execFileSync(c, ['--version'], { stdio: 'pipe' });
+			return c;
+		} catch (e) {
+			// not on PATH (or a GUI build that refuses --version): keep looking
+			if (e.status === 0) return c;
+		}
+	}
+	return null;
+}
+
+const LUA_SUITES = [
+	{ name: 'celeste-pcg Lua port', dir: path.join(ENGINE_DIR, 'lua', 'test') },
+	{ name: 'seleCte Lua port', dir: path.join(ROOT, 'Loenn', 'library', 'selecte', 'test') },
+];
+
+function checkLuaSuites() {
+	console.log('Lua test suites (LOVE)');
+	const love = findLove();
+	if (!love) {
+		console.log('  --  skipped: no `love` binary found (install LOVE 11 to run the Lua suites locally)');
+		return;
+	}
+	for (const suite of LUA_SUITES) {
+		const report = path.join(suite.dir, 'test_report.txt');
+		fs.rmSync(report, { force: true });
+		try {
+			// the suites write their results to test_report.txt and exit
+			// non-zero on failure (LOVE's stdout is not reliably capturable
+			// on Windows, hence the file)
+			execFileSync(love, [suite.dir], { stdio: 'pipe', timeout: 300000 });
+		} catch (e) {
+			// fall through: the report (if written) says what failed
+		}
+		if (!fs.existsSync(report)) {
+			fail(`${suite.name}: LOVE wrote no test_report.txt (did it fail to start?)`);
+			continue;
+		}
+		const text = fs.readFileSync(report, 'utf8');
+		const m = text.match(/(\d+) passed, (\d+) failed/);
+		if (!m) {
+			fail(`${suite.name}: unreadable test report:\n${text}`);
+		} else if (Number(m[2]) > 0) {
+			const failed = text.split('\n').filter((l) => l.startsWith('  FAIL') || l.startsWith('       ')).join('\n');
+			fail(`${suite.name}: ${m[2]} Lua test(s) failed:\n${failed}`);
+		} else {
+			ok(`${suite.name}: ${m[1]} tests passed`);
+		}
+	}
+}
+
 checkEverestYaml();
 checkLoennScripts();
 checkEngineTests();
 checkSmokeGenerateAnalyze();
+checkLuaSuites();
 
 console.log('');
 if (failures.length) {
