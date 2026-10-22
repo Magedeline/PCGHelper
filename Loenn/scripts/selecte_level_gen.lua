@@ -30,6 +30,7 @@ local state = require("loaded_state")
 local snapshot = require("structs.snapshot")
 local mapItemUtils = require("map_item_utils")
 local filesystem = require("utils.filesystem")
+local fileLocations = require("file_locations")
 
 local pcg = mods.requireFromPlugin("library.pcg_toolkit")
 local alphabet = mods.requireFromPlugin("library.selecte.alphabet")
@@ -66,6 +67,13 @@ local MUSIC_OPTIONS = {
 	"music_rmx_01_forsaken_city", "music_rmx_02_old_site", "music_rmx_03_resort",
 	"music_rmx_04_cliffside", "music_rmx_05_mirror_temple", "music_rmx_06_reflection",
 	"music_rmx_07_summit", "music_rmx_09_core", "music_pico8_area1", "",
+}
+
+-- Loenn's path field with a folder picker; blank is allowed (the script
+-- picks a default) and so is a folder that does not exist yet (outputDir).
+local FOLDER_FIELD = {
+	fieldType = "path", allowFolders = true, allowFiles = false,
+	allowEmpty = true, allowMissingPath = true, relativeToMod = false,
 }
 
 local script = {
@@ -107,6 +115,8 @@ local script = {
 		solidTileset = { fieldType = "loennScripts.dropdown", options = SOLID_OPTIONS, editable = false },
 		output = { fieldType = "loennScripts.dropdown", options = { "map", "bin", "both" }, editable = false },
 		music = { fieldType = "loennScripts.dropdown", options = MUSIC_OPTIONS, editable = true },
+		trainBinFolder = FOLDER_FIELD,
+		outputDir = FOLDER_FIELD,
 	},
 	tooltips = {
 		nbRooms = "Number of rooms in the level (seleCte --nb-rooms).",
@@ -124,7 +134,8 @@ local script = {
 			.. "bin_folder = estimate it from every .bin in trainBinFolder (e.g. your Celeste/Content/Maps).",
 		background = "Background tile layer: none, bg_N = sample it from vanilla chapter N's background model, "
 			.. "or estimate one from the open map / trainBinFolder like the foreground.",
-		trainBinFolder = "Folder of .bin maps to train on when model/background is bin_folder.",
+		trainBinFolder = "Folder of .bin maps to train on when model/background is bin_folder. "
+			.. "Blank = the Content/Maps folder of the Celeste install Loenn is configured with (the vanilla chapters).",
 		solidTileset = "Vanilla tileset the solid glyph is drawn with (1 = Dirt, as seleCte encodes it; 3 = Snow, 6 = Stone, ...).",
 		output = "map = add the rooms to the open map beside its existing rooms (undoable); bin = write a standalone "
 			.. "chapter to disk exactly like seleCte's data_to_level.jl, with HeartIsEnd metadata; both = do both.",
@@ -145,6 +156,20 @@ local script = {
 local function scriptDir()
 	local source = debug.getinfo(1, "S").source:match("^@(.*)$") or ""
 	return filesystem.dirname(source)
+end
+
+-- Content/Maps of the Celeste install Loenn is configured with: the vanilla
+-- chapters, seleCte's own training corpus. nil when unknown or missing.
+local function defaultTrainBinFolder()
+	local ok, celesteDir = pcall(fileLocations.getCelesteDir)
+	if not ok or not celesteDir or celesteDir == "" then
+		return nil
+	end
+	local mapsDir = filesystem.joinpath(celesteDir, "Content", "Maps")
+	if filesystem.isDirectory(mapsDir) then
+		return mapsDir
+	end
+	return nil
 end
 
 local function defaultOutputDir()
@@ -193,6 +218,10 @@ local function roomsFromBinFolder(dir, log)
 	local packer = mods.requireFromPlugin("pcg_engine.celeste-pcg.lua.binary_packer")
 	if not packer then
 		error("binary_packer.lua not found under Loenn/pcg_engine/celeste-pcg/lua/")
+	end
+	if not dir or dir == "" then
+		error("trainBinFolder is blank and the Celeste directory Loenn is configured with has no Content/Maps folder: "
+			.. "set trainBinFolder to a folder of .bin maps")
 	end
 	if not filesystem.isDirectory(dir) then
 		error("trainBinFolder is not a directory: " .. tostring(dir))
@@ -355,7 +384,14 @@ function script.prerun(args)
 		tostring(rng.seed), nbRooms, roomW, roomH, proba, modelChoice, bgChoice))
 
 	-- 1. the model(s)
-	local sources = { binDir = args.trainBinFolder or "" }
+	local binDir = args.trainBinFolder or ""
+	if binDir == "" and (modelChoice == "bin_folder" or bgChoice == "bin_folder") then
+		binDir = defaultTrainBinFolder() or ""
+		if binDir ~= "" then
+			pcg.log("seleCte: trainBinFolder is blank, training on the vanilla chapters in " .. binDir)
+		end
+	end
+	local sources = { binDir = binDir }
 	local okModel, dpe = pcall(resolveModel, modelChoice, "fg", sources, pcg.log)
 	if not okModel then
 		pcg.log("seleCte: could not load the model - " .. tostring(dpe))
